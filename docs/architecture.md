@@ -1,0 +1,39 @@
+# 架构与数据契约
+
+## 目标和边界
+
+采集控制、设备读取与磁盘写入相互隔离。当前版本的硬件组合是 Piper + D435（前方）+ D405（腕部），但采集核心不依赖设备型号。控制系统不属于本工程；本工程不发送关节、笛卡尔、使能、复位或夹爪控制命令。
+
+```text
+RobotDevice (Piper / future) ── raw RobotState ─┐
+CameraDevice (RealSense / future) ── CameraFrame ├─ DataCollector
+GripperDevice (optional) ───────────────────────┘       │
+                                                          ├─ 原始机器人状态
+                                                          └─ 以相机组帧为基准的对齐快照
+                                                                  │
+                                                            有界 multiprocessing.Queue
+                                                                  │
+                                                          HDF5 写入进程
+```
+
+## 子模块和依赖
+
+`piper_sdk/` 是 AgileX Piper SDK 的 Git 子模块，固定提交用于可复现的 CAN 协议实现。采集代码只经 `devices/piper.py` 接触 SDK；升级子模块需要单独验证单位、接口和固件兼容性。`pyproject.toml` 通过 uv 本地 editable source 安装该子模块，避免另从 PyPI 下载不同版本。
+
+## 标准化数据模型
+
+- 所有设备适配器输出 `RobotState`：关节为 `rad`，位置为 `m`，位姿为 `xyz_xyzw`。
+- Piper 反馈关节为 `0.001°`，适配器乘以 `pi / 180000`；位置为 `0.001 mm`，适配器乘以 `1e-6`。
+- Piper 末端反馈的 XYZ 欧拉角先按 SDK 示例的 `Rz * Ry * Rx` 约定转换为四元数 `xyzw`，再应用配置的工具偏移。该假设与 SDK 示例同源，仍应通过现场标定验证。
+- `CameraFrame` 保留原始数组，采集主进程编码 RGB 为 JPEG、深度为 `uint16` PNG，再传给写入进程。
+
+## HDF5 与时间语义
+
+- `/puppet/*_raw` 在 `robot_hz` 周期写入真实反馈时间戳。
+- 相机每获得完整多视角组帧，使用采集时刻创建 `/camera_observations`，并将最新且不超过 `max_alignment_age_ms` 的机器人状态写入 `*_align`。
+- 若不存在足够新的状态，相机帧不写入；这比用旧值伪造对齐更安全。缺失与读取异常写入 `quality.json`。
+- HDF5 首先写入 `trajectory.hdf5.partial`。写入进程正常关闭、更新 `trajectory_length` 后才原子改名为正式文件。
+
+## 扩展路径
+
+新增机器人：实现 `RobotDevice.start/read/stop` 并登记到 `devices/factory.py`；新增相机同理。若新增模态，先在配置中加开关，再在数据模型、写入器和质检器三处同步实现。不可只改写入器，否则会形成无法验证的 schema 漂移。

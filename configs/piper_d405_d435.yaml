@@ -1,0 +1,71 @@
+# 真实设备模板。所有“待填写”项都必须在现场配置副本中替换，禁止提交标定和人员敏感信息。
+session:
+  output_root: ./records
+  data_type: real
+  language_instruction: "待填写：本次任务的语言指令"
+  collector_hash: "待填写：采集员哈希 ID"
+  format_version: "1.0.0"
+  duration_s: 60
+  # Piper 原生姿态是欧拉角；适配器转换为 xyzw 四元数，避免将欧拉角伪称为旋转向量。
+  pose_representation: xyz_xyzw
+  hdf5:
+    queue_size: 256
+    batch_size: 16
+    flush_every_batches: 10
+    queue_put_timeout_s: 2.0
+    jpeg_quality: 95
+
+modalities:
+  rgb: true
+  depth: false
+  arm_joint_positions: true
+  tcp_pose: true
+  gripper_position: false
+
+acquisition:
+  robot_hz: 60
+  camera_rig_hz: 30
+  max_alignment_age_ms: 100
+
+cameras:
+  - name: camera_front
+    driver: realsense
+    model: RealSense_D435
+    serial_number: "待填写：D435 序列号"
+    width: 640
+    height: 480
+    depth_width: 640
+    depth_height: 480
+    fps: 30
+    color_order: bgr
+    enabled: true
+    align_depth_to_color: true
+    # 以采集参考 base 为源坐标、相机光学坐标系为目标坐标的现场标定 4×4 矩阵。
+    base_to_camera: null
+  - name: camera_wrist_right
+    driver: realsense
+    model: RealSense_D405
+    serial_number: "待填写：D405 序列号"
+    width: 640
+    height: 480
+    depth_width: 640
+    depth_height: 480
+    fps: 30
+    color_order: bgr
+    enabled: true
+    align_depth_to_color: true
+    base_to_camera: null
+
+robot:
+  name: piper
+  driver: piper
+  can_name: can0
+  # 与 Piper SDK 一致：0x01 使用含 J2/J3 偏置的 DH 参数；本采集默认读取固件末端反馈。
+  dh_is_offset: 1
+  # TCP = 法兰末端反馈经工具偏移得到；未安装工具时保持 [0, 0, 0]。
+  tool_offset_m: [0.0, 0.0, 0.0]
+  base_to_robot: null
+
+gripper:
+  enabled: false
+  driver: none

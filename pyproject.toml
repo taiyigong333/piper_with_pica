@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taiyi-piper-collect"
+version = "0.1.0"
+description = "面向 Piper 与多相机的配置驱动机器人数据采集系统"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "h5py>=3.9",
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+  "piper-sdk",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+realsense = ["pyrealsense2"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+piper-collect = "taiyi_piper_collect.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv.sources]
+piper-sdk = { path = "piper_sdk", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

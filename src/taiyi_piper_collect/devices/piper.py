@@ -1,0 +1,107 @@
+"""Piper 只读反馈适配器。
+
+SDK 的反馈值带有设备单位；本模块是唯一负责转换为数据集标准单位的边界。
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from typing import Any
+
+import numpy as np
+
+from ..config import RobotConfig
+from ..errors import DeviceError, HardwareDependencyError
+from ..models import RobotState
+from .base import RobotDevice
+
+
+def euler_xyz_to_xyzw(euler_rad: np.ndarray) -> np.ndarray:
+    """按 Piper SDK TCP 示例的 `Rz * Ry * Rx` 约定将 XYZ 欧拉角转四元数。"""
+
+    rx, ry, rz = (float(value) for value in euler_rad)
+    cx, sx = math.cos(rx / 2), math.sin(rx / 2)
+    cy, sy = math.cos(ry / 2), math.sin(ry / 2)
+    cz, sz = math.cos(rz / 2), math.sin(rz / 2)
+    return np.asarray(
+        [
+            sx * cy * cz - cx * sy * sz,
+            cx * sy * cz + sx * cy * sz,
+            cx * cy * sz - sx * sy * cz,
+            cx * cy * cz + sx * sy * sz,
+        ],
+        dtype=np.float64,
+    )
+
+
+def rotate_vector_xyzw(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    """旋转工具偏移；使用矩阵形式避免引入额外姿态库。"""
+
+    x, y, z, w = (float(value) for value in quaternion)
+    rotation = np.asarray(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+    return rotation @ vector
+
+
+class PiperRobot(RobotDevice):
+    """通过 `piper_sdk` 读取 CAN 反馈，严格不下发运动或初始化查询指令。"""
+
+    def __init__(self, config: RobotConfig, pose_representation: str) -> None:
+        if pose_representation != "xyz_xyzw":
+            raise DeviceError("Piper 仅支持标准化输出 xyz_xyzw。")
+        self._config = config
+        self._interface: Any | None = None
+
+    def start(self) -> None:
+        if self._interface is not None:
+            return
+        try:
+            from piper_sdk import C_PiperInterface_V2
+        except ImportError as error:
+            raise HardwareDependencyError("缺少 piper_sdk；请执行 uv sync 以安装本地子模块。") from error
+        try:
+            interface = C_PiperInterface_V2(
+                can_name=self._config.can_name,
+                dh_is_offset=self._config.dh_is_offset,
+            )
+            # piper_init=False 至关重要：禁止 PiperInit 发送任何查询或控制帧。
+            interface.ConnectPort(piper_init=False)
+            self._interface = interface
+        except Exception as error:
+            self.stop()
+            raise DeviceError(f"Piper CAN 接口 {self._config.can_name} 启动失败：{error}") from error
+
+    def read(self) -> RobotState:
+        if self._interface is None:
+            raise DeviceError("Piper 尚未启动。")
+        try:
+            joints_message = self._interface.GetArmJointMsgs().joint_state
+            end_pose = self._interface.GetArmEndPoseMsgs().end_pose
+            joint_values = [getattr(joints_message, f"joint_{index}") for index in range(1, 7)]
+            joints_rad = np.asarray(joint_values, dtype=np.float64) * (math.pi / 180000.0)
+            position_m = np.asarray([end_pose.X_axis, end_pose.Y_axis, end_pose.Z_axis], dtype=np.float64) * 1e-6
+            euler_rad = np.asarray([end_pose.RX_axis, end_pose.RY_axis, end_pose.RZ_axis], dtype=np.float64) * (math.pi / 180000.0)
+            quaternion = np.asarray(euler_xyz_to_xyzw(euler_rad), dtype=np.float64)
+            position_m += rotate_vector_xyzw(quaternion, np.asarray(self._config.tool_offset_m, dtype=np.float64))
+            tcp_pose = np.concatenate((position_m, quaternion))
+            if not np.isfinite(joints_rad).all() or not np.isfinite(tcp_pose).all():
+                raise DeviceError("Piper 返回 NaN 或 Inf。")
+            return RobotState(timestamp=time.time(), joint_positions=joints_rad, tcp_pose=tcp_pose)
+        except DeviceError:
+            raise
+        except Exception as error:
+            raise DeviceError(f"Piper 反馈读取失败：{error}") from error
+
+    def stop(self) -> None:
+        if self._interface is not None:
+            try:
+                self._interface.DisconnectPort()
+            finally:
+                self._interface = None

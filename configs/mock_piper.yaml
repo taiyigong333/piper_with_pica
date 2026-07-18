@@ -1,0 +1,51 @@
+# 无硬件端到端验证配置；生成的图像和机器人状态均为确定性模拟数据。
+session:
+  output_root: ./records
+  data_type: synthetic
+  language_instruction: "将方块放入容器"
+  collector_hash: mock_operator
+  format_version: "1.0.0"
+  duration_s: 1.0
+  pose_representation: xyz_xyzw
+  hdf5:
+    queue_size: 64
+    batch_size: 8
+    flush_every_batches: 2
+    jpeg_quality: 95
+
+modalities:
+  rgb: true
+  depth: true
+  arm_joint_positions: true
+  tcp_pose: true
+  gripper_position: true
+
+acquisition:
+  robot_hz: 60
+  camera_rig_hz: 15
+  max_alignment_age_ms: 100
+
+cameras:
+  - name: camera_front
+    driver: mock
+    model: RealSense_D435
+    width: 320
+    height: 240
+    fps: 15
+    color_order: bgr
+  - name: camera_wrist_right
+    driver: mock
+    model: RealSense_D405
+    width: 320
+    height: 240
+    fps: 15
+    color_order: bgr
+
+robot:
+  name: piper
+  driver: mock
+  base_to_robot: null
+
+gripper:
+  enabled: true
+  driver: mock
