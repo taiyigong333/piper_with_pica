@@ -17,6 +17,14 @@ def test_mock_config_can_be_loaded() -> None:
     assert [camera.name for camera in config.enabled_cameras] == ["camera_front", "camera_wrist_right"]
 
 
+def test_fully_annotated_real_example_can_be_loaded() -> None:
+    config_path = Path(__file__).parents[1] / "configs" / "piper_d405_d435.example.yaml"
+    config = load_config(config_path)
+
+    assert config.robot.driver == "piper"
+    assert config.session.pose_representation == "xyz_xyzw"
+
+
 def test_piper_rejects_euler_pose_schema(tmp_path: Path) -> None:
     config_path = tmp_path / "invalid.yaml"
     config_path.write_text(

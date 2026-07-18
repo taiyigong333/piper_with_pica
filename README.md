@@ -38,7 +38,7 @@ uv run pytest
 
 ## 真实设备采集
 
-1. 将 `configs/piper_d405_d435.yaml` 复制到不提交的现场配置文件，填入采集员哈希、任务、相机序列号、CAN 名称、标定矩阵和工具偏移。
+1. 优先将全注释的 `configs/piper_d405_d435.example.yaml` 复制到不提交的现场配置文件；其中每个配置项均说明了用途、单位与填写要求。`configs/piper_d405_d435.yaml` 保留为紧凑模板。
 2. 激活并确认 Piper 所在 SocketCAN 接口后，执行 `uv run piper-collect discover-realsense` 确认序列号。
 3. 执行只读预检：`uv run piper-collect preflight --config <现场配置>`。
 4. 确认机械臂工作空间安全后，执行 `uv run piper-collect collect --config <现场配置>`。

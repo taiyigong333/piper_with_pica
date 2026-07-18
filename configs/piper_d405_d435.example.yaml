@@ -1,0 +1,72 @@
+# Piper + RealSense D435（前方）+ D405（腕部）全注释示例。
+# 复制为现场 YAML 后填写所有“待填写”值；不要把人员身份、标定结果或设备序列号提交到公开仓库。
+
+session: # 一条轨迹及其落盘策略的全局配置。
+  output_root: ./records # 数据集根目录；相对路径以本 YAML 所在目录为基准。
+  data_type: real # 数据来源类型：real、sim 或 synthetic；sim 时必须设置 sim_assets。
+  language_instruction: "待填写：将物体放入容器" # 本条轨迹对应的自然语言任务指令。
+  collector_hash: "待填写：采集员哈希 ID" # 不写真实姓名；使用可追溯且不可识别的采集员 ID。
+  format_version: "1.0.0" # HDF5 Schema 版本；字段、单位或编码不兼容变更时必须递增。
+  trajectory_id: null # 可选固定轨迹 ID；null 时自动生成 <类型>_<机器人>_<时间>_0001。
+  duration_s: 60 # 采集时长（秒）；也可由命令行 --duration 覆盖，必须大于 0。
+  sim_assets: null # 仿真资产可检索 ID；仅 data_type=sim 时填写，真实采集保持 null。
+  pose_representation: xyz_xyzw # 位姿格式；Piper 只支持 xyz_xyzw（位置 m + 四元数 xyzw）。
+  hdf5: # 异步 HDF5 写入参数；一般保持默认，磁盘较慢时可适当增大队列。
+    queue_size: 256 # 有界写入队列容量；满时采集会报错停止，绝不会静默丢数。
+    batch_size: 16 # 写入进程每次合并处理的最多事件数。
+    flush_every_batches: 10 # 每写入多少批次强制 flush 一次。
+    queue_put_timeout_s: 2.0 # 入队等待上限（秒）；超时会停止当前采集。
+    jpeg_quality: 95 # RGB JPEG 质量，范围 1～100；更高质量占用更多存储空间。
+
+modalities: # true 表示创建、采集并写入该模态；false 表示完全不创建对应数据集。
+  rgb: true # 是否采集每台启用相机的 RGB 图像（JPEG）。
+  depth: false # 是否采集深度图（uint16 PNG）；启用后 RealSense 深度会对齐到彩色图（若配置允许）。
+  arm_joint_positions: true # 是否采集 Piper 机械臂真实反馈的六个关节角（rad）。
+  tcp_pose: true # 是否采集真实反馈的 TCP 位姿（Piper 为 m + xyzw）。
+  gripper_position: false # 是否采集独立夹爪位置；当前真实 Piper 模板未接入夹爪驱动，保持 false。
+
+acquisition: # 设备读数与相机对齐频率；相机是对齐时间轴基准。
+  robot_hz: 60 # 机器人原始反馈采样频率（Hz）；会写入 *_raw 数据集。
+  camera_rig_hz: 30 # 多相机组帧与 *_align 写入频率（Hz）；不能高于任一启用相机 fps。
+  max_alignment_age_ms: 100 # 相机时刻允许使用的最新机器人状态最大年龄（毫秒）；超限帧会跳过而不复制旧值。
+
+cameras: # 相机列表；可继续添加其他位置或其他已注册 driver 的相机。
+  - name: camera_front # HDF5 相机名称；必须以 camera_ 开头，建议按位置命名。
+    driver: realsense # 相机适配器名称；当前支持 realsense 和 mock。
+    model: RealSense_D435 # 设备型号，会随轨迹写入 /camera_model。
+    serial_number: "待填写：D435 序列号" # 使用 discover-realsense 查询到的设备唯一序列号。
+    width: 640 # 彩色图宽度（像素）；保留设备原始输出，不在采集器内缩放。
+    height: 480 # 彩色图高度（像素）。
+    depth_width: 640 # 深度图宽度（像素）；depth=false 时保留也无影响。
+    depth_height: 480 # 深度图高度（像素）。
+    fps: 30 # 相机硬件流帧率（Hz）；必须不低于 acquisition.camera_rig_hz。
+    color_order: bgr # 彩色数组通道顺序：bgr 或 rgb；RealSense/OpenCV 默认使用 bgr。
+    enabled: true # 是否启动此相机；false 时该相机完全不参与采集。
+    align_depth_to_color: true # depth=true 时是否由 SDK 将深度对齐到彩色图坐标系。
+    base_to_camera: null # 现场标定的 4×4 齐次矩阵（采集参考 base -> 相机光学坐标系）；未知时保留 null，禁止伪造单位阵。
+  - name: camera_wrist_right # HDF5 相机名称；D405 当前安装于右腕，按此位置命名。
+    driver: realsense # 相机适配器名称；D405 与 D435 共用 RealSense 适配器。
+    model: RealSense_D405 # 设备型号，会随轨迹写入 /camera_model。
+    serial_number: "待填写：D405 序列号" # 使用 discover-realsense 查询到的设备唯一序列号。
+    width: 640 # 彩色图宽度（像素）；请以实际设备支持的流配置为准。
+    height: 480 # 彩色图高度（像素）。
+    depth_width: 640 # 深度图宽度（像素）；须与实际启用的 D405 深度流匹配。
+    depth_height: 480 # 深度图高度（像素）。
+    fps: 30 # 相机硬件流帧率（Hz）；双相机时需检查 USB 带宽。
+    color_order: bgr # 彩色数组通道顺序：bgr 或 rgb。
+    enabled: true # 是否启动此相机；false 时不写入腕部相机数据。
+    align_depth_to_color: true # depth=true 时是否将深度对齐到彩色图。
+    base_to_camera: null # 腕部相机的现场 4×4 外参；更换支架、工具或相机后必须重新标定。
+
+robot: # 机器人设备及 TCP 变换配置。
+  name: piper # 机器人名称，会写入 /robot_model/robot_single。
+  driver: piper # 机器人适配器名称；当前支持 piper 和 mock。
+  joint_count: 6 # 关节数；Piper 固定为 6，其他机器人可通过其适配器和此配置扩展。
+  can_name: can0 # 已由现场激活的 Piper SocketCAN 接口名；本工程不会配置 CAN 接口。
+  dh_is_offset: 1 # Piper SDK DH 偏置开关：1 表示 J2/J3 使用 SDK 默认偏置；仅影响 SDK FK，当前默认读取原生末端反馈。
+  tool_offset_m: [0.0, 0.0, 0.0] # TCP 相对 Piper 法兰末端的 [x, y, z] 偏移（m，J6 坐标系）；无工具时保持全 0。
+  base_to_robot: null # 现场标定的 4×4 齐次矩阵（采集参考 base -> Piper 基座）；未知时为 null，禁止伪造单位阵。
+
+gripper: # 独立夹爪设备配置；只有 modalities.gripper_position=true 时才会创建并读取。
+  enabled: false # 是否启用独立夹爪驱动；当前真实 Piper 示例未接入夹爪，保持 false。
+  driver: none # 夹爪适配器名称；enabled=false 时必须为 none，已接入驱动后改为对应注册名称。
