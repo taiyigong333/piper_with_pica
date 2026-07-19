@@ -14,7 +14,7 @@ import numpy as np
 from ..config import RobotConfig
 from ..errors import DeviceError, HardwareDependencyError
 from ..models import RobotState
-from .base import RobotDevice
+from .base import GripperDevice, RobotDevice
 
 
 def euler_xyz_to_xyzw(euler_rad: np.ndarray) -> np.ndarray:
@@ -48,6 +48,15 @@ def rotate_vector_xyzw(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray
         dtype=np.float64,
     )
     return rotation @ vector
+
+
+def gripper_stroke_to_m(stroke_in_micrometers: int | float) -> float:
+    """将 Piper SDK 的夹爪行程（0.001 mm）转换为标准单位米。"""
+
+    stroke_m = float(stroke_in_micrometers) * 1e-6
+    if not math.isfinite(stroke_m):
+        raise DeviceError("Piper 夹爪反馈返回 NaN 或 Inf。")
+    return stroke_m
 
 
 class PiperRobot(RobotDevice):
@@ -99,9 +108,43 @@ class PiperRobot(RobotDevice):
         except Exception as error:
             raise DeviceError(f"Piper 反馈读取失败：{error}") from error
 
+    def read_gripper_position(self) -> float:
+        """读取 Piper 夹爪行程反馈，不发送任何 CAN 控制帧。"""
+
+        if self._interface is None:
+            raise DeviceError("Piper 尚未启动。")
+        try:
+            # SDK 的 grippers_angle 是 0.001 mm；采集格式统一使用米。
+            feedback = self._interface.GetArmGripperMsgs().gripper_state
+            return gripper_stroke_to_m(feedback.grippers_angle)
+        except DeviceError:
+            raise
+        except Exception as error:
+            raise DeviceError(f"Piper 夹爪反馈读取失败：{error}") from error
+
     def stop(self) -> None:
         if self._interface is not None:
             try:
                 self._interface.DisconnectPort()
             finally:
                 self._interface = None
+
+
+class PiperGripper(GripperDevice):
+    """复用 `PiperRobot` 的只读 CAN 连接读取夹爪行程。"""
+
+    def __init__(self, robot: PiperRobot) -> None:
+        self._robot = robot
+        self._started = False
+
+    def start(self) -> None:
+        # 连接的生命周期由 PiperRobot 负责，避免为夹爪重复打开同一 CAN 口。
+        self._started = True
+
+    def read_position(self) -> float:
+        if not self._started:
+            raise DeviceError("Piper 夹爪尚未启动。")
+        return self._robot.read_gripper_position()
+
+    def stop(self) -> None:
+        self._started = False

@@ -95,7 +95,7 @@ def preflight(config: CollectConfig) -> dict[str, Any]:
             report["warnings"].append("未配置 base_to_robot 变换。")
 
         if config.modalities.gripper_position:
-            gripper = create_gripper(config.gripper)
+            gripper = create_gripper(config.gripper, robot)
             if gripper is None:
                 raise DeviceError("已启用夹爪位置但未创建夹爪设备。")
             gripper.start()

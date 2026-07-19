@@ -275,5 +275,7 @@ def load_config(path: str | Path) -> CollectConfig:
         raise ConfigurationError("启用 gripper_position 时必须配置 gripper.enabled=true。")
     if gripper.enabled and gripper.driver == "none":
         raise ConfigurationError("启用夹爪时必须指定 gripper.driver。")
+    if gripper.driver == "piper" and robot.driver != "piper":
+        raise ConfigurationError("gripper.driver=piper 必须与 robot.driver=piper 一起使用。")
 
     return CollectConfig(session, modalities, acquisition, cameras, robot, gripper, source_path)

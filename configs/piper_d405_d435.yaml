@@ -20,7 +20,7 @@ modalities:
   depth: false
   arm_joint_positions: true
   tcp_pose: true
-  gripper_position: false
+  gripper_position: true
 
 acquisition:
   robot_hz: 60
@@ -67,5 +67,5 @@ robot:
   base_to_robot: null
 
 gripper:
-  enabled: false
-  driver: none
+  enabled: true
+  driver: piper

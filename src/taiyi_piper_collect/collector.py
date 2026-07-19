@@ -158,7 +158,7 @@ class DataCollector:
         try:
             cameras = {camera.name: create_camera(camera) for camera in self.config.enabled_cameras}
             robot = create_robot(self.config.robot, self.config.session.pose_representation)
-            gripper = create_gripper(self.config.gripper) if self.config.modalities.gripper_position else None
+            gripper = create_gripper(self.config.gripper, robot) if self.config.modalities.gripper_position else None
             for camera in cameras.values():
                 camera.start(capture_depth=self.config.modalities.depth)
             robot.start()

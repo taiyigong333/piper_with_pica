@@ -23,6 +23,8 @@ def test_fully_annotated_real_example_can_be_loaded() -> None:
 
     assert config.robot.driver == "piper"
     assert config.session.pose_representation == "xyz_xyzw"
+    assert config.modalities.gripper_position
+    assert config.gripper.driver == "piper"
 
 
 def test_piper_rejects_euler_pose_schema(tmp_path: Path) -> None:

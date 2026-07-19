@@ -38,7 +38,7 @@ class RobotState:
     timestamp: float
     joint_positions: np.ndarray | None = None
     tcp_pose: np.ndarray | None = None
-    gripper_position: np.ndarray | None = None
+    gripper_position: np.ndarray | None = None  # 夹爪开闭行程，单位 m。
     is_intervene: bool = False
 
 

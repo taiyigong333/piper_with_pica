@@ -2,7 +2,7 @@
 
 本工程面向当前 Piper 单臂、RealSense D405（腕部）与 D435（前方）采集，同时以设备接口和 YAML 配置隔离硬件细节，便于后续接入其他机械臂、相机和可选模态。
 
-当前采集的核心观测为：Piper 6 关节角（`rad`）、TCP 位姿（`m + xyzw`）、多个相机的 RGB，深度和夹爪位置均由配置开关控制。数据按《数据采集与留存规范》写入 HDF5，并同时生成 `quality.json`、`manifest.json` 与 `checksums.sha256`。
+当前采集的核心观测为：Piper 6 关节角（`rad`）、TCP 位姿（`m + xyzw`）、多个相机的 RGB 和 Piper 夹爪开闭行程（`m`）；深度采集由配置开关控制。数据按《数据采集与留存规范》写入 HDF5，并同时生成 `quality.json`、`manifest.json` 与 `checksums.sha256`。
 
 ## 环境与安装
 
@@ -62,7 +62,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect validate <trajectory_path>/traje
    UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect preflight --config configs/现场_piper.yaml
    ```
 
-   仅当输出的 `result` 为 `pass`，且关节、TCP 和相机分辨率均符合现场预期时才继续。
+   仅当输出的 `result` 为 `pass`，且关节、TCP、夹爪行程和相机分辨率均符合现场预期时才继续。Piper 夹爪读取 `GetArmGripperMsgs().gripper_state.grippers_angle`，SDK 原始单位为 `0.001 mm`，本工程写入 HDF5 前转换为米；该值是夹爪行程，非标准夹爪机构的指尖距离需另行标定。
 5. 采集与校验：
 
    ```bash

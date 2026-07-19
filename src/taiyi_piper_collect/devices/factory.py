@@ -6,7 +6,7 @@ from ..config import CameraConfig, GripperConfig, RobotConfig
 from ..errors import ConfigurationError
 from .base import CameraDevice, GripperDevice, RobotDevice
 from .mock import MockCamera, MockGripper, MockRobot
-from .piper import PiperRobot
+from .piper import PiperGripper, PiperRobot
 from .realsense import RealSenseCamera
 
 
@@ -26,9 +26,13 @@ def create_robot(config: RobotConfig, pose_representation: str) -> RobotDevice:
     raise ConfigurationError(f"不支持的机器人驱动：{config.driver}。")
 
 
-def create_gripper(config: GripperConfig) -> GripperDevice | None:
+def create_gripper(config: GripperConfig, robot: RobotDevice | None = None) -> GripperDevice | None:
     if not config.enabled:
         return None
     if config.driver == "mock":
         return MockGripper(config)
+    if config.driver == "piper":
+        if not isinstance(robot, PiperRobot):
+            raise ConfigurationError("Piper 夹爪必须复用对应的 PiperRobot 连接。")
+        return PiperGripper(robot)
     raise ConfigurationError(f"不支持的夹爪驱动：{config.driver}。")

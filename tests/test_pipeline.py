@@ -40,6 +40,7 @@ def test_mock_preflight_and_collection_create_valid_package(tmp_path: Path) -> N
         assert length == result.writer_report.trajectory_length
         assert file["puppet/arm_single_position_align/data"].shape == (length, 6)
         assert file["puppet/end_effector_single_pose_align/data"].shape == (length, 7)
+        assert file["puppet/end_effector_single_position_align/data"].shape == (length, 1)
         assert len(file["camera_observations/color_images/camera_front"]) == length
         assert len(file["camera_observations/depth_images/camera_wrist_right"]) == length
 
