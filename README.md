@@ -124,7 +124,9 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect teleop-session \
   --repeat
 ```
 
-会话所有阶段均按单个空格推进：校准完成、预检后的安全确认、Sense 双击并实际跟随、以及实体设备停止遥操之后。按 `q` 取消，不再输入 `yes/no`。每条轨迹默认保存，只有显式追加 `--on-complete delete` 才会删除。编排层启动 ROS 前会移除 uv 的 Python 环境变量，并检查关键 ROS 节点日志；`pika_ros` 的代码和 launch 文件不会被修改。完整流程见 [docs/2026-07-18_02_Pika_Sense遥操采集流程.md](docs/2026-07-18_02_Pika_Sense遥操采集流程.md)。
+会话所有阶段均按单个空格推进：校准完成、预检后的安全确认、Sense 双击并实际跟随、以及实体设备停止遥操之后。按 `q` 取消，不再输入 `yes/no`。每条轨迹默认保存，只有显式追加 `--on-complete delete` 才会删除。
+
+现场执行顺序为：先停止旧的 Pika 定位/遥操进程，再校准、预检、读取并填写起始位姿，最后启动会话。`LIBUSB_ERROR_BUSY (-6)` 表示 Sense USB 接口仍被其他进程占用，不能将该次校准视为可靠完成。编排层启动 ROS 前会移除 uv 的 Python 环境变量，并检查关键 ROS 节点日志；`pika_ros` 的代码和 launch 文件不会被修改。各脚本职责、配置示例、完整操作顺序与排障见 [docs/2026-07-19_01_遥操脚本与现场操作说明.md](docs/2026-07-19_01_遥操脚本与现场操作说明.md)。
 
 ## 配置与扩展
 
@@ -136,4 +138,4 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect teleop-session \
 - `robot.initial_pose` 仅供 `teleop-session` 在已有 ROS 遥操启动前使用；采集与 `preflight` 仍严格只读。TCP 目标使用与采集一致的物理 TCP，控制时会反算 `tool_offset_m` 后下发 Piper 原生末端坐标。
 - 保持 `session.format_version`、字段名、单位或编码发生不兼容变化时，必须提升格式版本，并同步更新 `quality.py`。
 
-文档按日期和同日序号排序；交接文档不参与排序。详细边界、数据流和现场接入项见 [docs/2026-07-18_01_架构与数据契约.md](docs/2026-07-18_01_架构与数据契约.md)、[docs/2026-07-18_02_Pika_Sense遥操采集流程.md](docs/2026-07-18_02_Pika_Sense遥操采集流程.md) 和 [docs/项目交接.md](docs/项目交接.md)。
+文档按日期和同日序号排序；交接文档不参与排序。详细边界、数据流和现场接入项见 [docs/2026-07-18_01_架构与数据契约.md](docs/2026-07-18_01_架构与数据契约.md)、[docs/2026-07-18_02_Pika_Sense遥操采集流程.md](docs/2026-07-18_02_Pika_Sense遥操采集流程.md)、[docs/2026-07-19_01_遥操脚本与现场操作说明.md](docs/2026-07-19_01_遥操脚本与现场操作说明.md) 和 [docs/项目交接.md](docs/项目交接.md)。
