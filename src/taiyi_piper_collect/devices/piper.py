@@ -115,12 +115,27 @@ class PiperRobot(RobotDevice):
             raise DeviceError("Piper 尚未启动。")
         try:
             # SDK 的 grippers_angle 是 0.001 mm；采集格式统一使用米。
-            feedback = self._interface.GetArmGripperMsgs().gripper_state
-            return gripper_stroke_to_m(feedback.grippers_angle)
+            message = self._interface.GetArmGripperMsgs()
+            if float(message.time_stamp) <= 0:
+                raise DeviceError("尚未收到 Piper 夹爪 0x2A8 反馈，不能使用 SDK 默认的零行程。")
+            return gripper_stroke_to_m(message.gripper_state.grippers_angle)
         except DeviceError:
             raise
         except Exception as error:
             raise DeviceError(f"Piper 夹爪反馈读取失败：{error}") from error
+
+    def wait_for_gripper_feedback(self, timeout_s: float = 1.0) -> float:
+        """等待首个有效夹爪反馈，避免启动瞬间把 SDK 默认零值写入数据集。"""
+
+        deadline = time.monotonic() + timeout_s
+        last_error: DeviceError | None = None
+        while time.monotonic() < deadline:
+            try:
+                return self.read_gripper_position()
+            except DeviceError as error:
+                last_error = error
+                time.sleep(0.005)
+        raise DeviceError(f"等待 Piper 夹爪 0x2A8 反馈超时（{timeout_s:.1f} 秒）。") from last_error
 
     def stop(self) -> None:
         if self._interface is not None:
@@ -139,6 +154,7 @@ class PiperGripper(GripperDevice):
 
     def start(self) -> None:
         # 连接的生命周期由 PiperRobot 负责，避免为夹爪重复打开同一 CAN 口。
+        self._robot.wait_for_gripper_feedback()
         self._started = True
 
     def read_position(self) -> float:

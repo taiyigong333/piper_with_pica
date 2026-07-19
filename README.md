@@ -62,7 +62,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect validate <trajectory_path>/traje
    UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect preflight --config configs/现场_piper.yaml
    ```
 
-   仅当输出的 `result` 为 `pass`，且关节、TCP、夹爪行程和相机分辨率均符合现场预期时才继续。Piper 夹爪读取 `GetArmGripperMsgs().gripper_state.grippers_angle`，SDK 原始单位为 `0.001 mm`，本工程写入 HDF5 前转换为米；该值是夹爪行程，非标准夹爪机构的指尖距离需另行标定。
+   仅当输出的 `result` 为 `pass`，且关节、TCP、夹爪行程和相机分辨率均符合现场预期时才继续。Piper 夹爪读取 `GetArmGripperMsgs().gripper_state.grippers_angle`，SDK 原始单位为 `0.001 mm`，本工程写入 HDF5 前转换为米；预检会等待最多 1 秒的 `0x2A8` 首帧，未收到时明确失败，不会将 SDK 默认的 `0.0` 当作真实行程。该值是夹爪行程，非标准夹爪机构的指尖距离需另行标定。
 5. 采集与校验：
 
    ```bash

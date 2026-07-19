@@ -26,7 +26,7 @@ def test_tool_offset_follows_end_effector_orientation() -> None:
 def test_piper_gripper_reads_sdk_stroke_in_meters() -> None:
     robot = PiperRobot(RobotConfig(name="piper", driver="piper", can_name="can0"), "xyz_xyzw")
     robot._interface = SimpleNamespace(
-        GetArmGripperMsgs=lambda: SimpleNamespace(gripper_state=SimpleNamespace(grippers_angle=42_500))
+        GetArmGripperMsgs=lambda: SimpleNamespace(time_stamp=1.0, gripper_state=SimpleNamespace(grippers_angle=42_500))
     )
 
     gripper = create_gripper(GripperConfig(enabled=True, driver="piper"), robot)
@@ -41,3 +41,13 @@ def test_gripper_stroke_to_meters_rejects_nonfinite_value() -> None:
     assert gripper_stroke_to_m(70_000) == pytest.approx(0.07)
     with pytest.raises(DeviceError, match="NaN 或 Inf"):
         gripper_stroke_to_m(float("nan"))
+
+
+def test_piper_gripper_rejects_sdk_default_zero_before_feedback() -> None:
+    robot = PiperRobot(RobotConfig(name="piper", driver="piper", can_name="can0"), "xyz_xyzw")
+    robot._interface = SimpleNamespace(
+        GetArmGripperMsgs=lambda: SimpleNamespace(time_stamp=0.0, gripper_state=SimpleNamespace(grippers_angle=0))
+    )
+
+    with pytest.raises(DeviceError, match="0x2A8"):
+        robot.read_gripper_position()
