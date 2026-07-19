@@ -17,11 +17,31 @@ def test_teleop_example_can_be_loaded() -> None:
     assert config.sensor.name == "pika_sense"
     assert "survive-cli --force-calibrate" in config.force_calibration_command
     assert "teleop_single_piper.launch.py" in config.controller.command
+    assert "pub_delta_pose.py" in config.controller.required_log_patterns
+
+
+def test_ros_child_environment_removes_uv_python_environment(monkeypatch) -> None:
+    monkeypatch.setenv("VIRTUAL_ENV", "/tmp/project/.venv")
+    monkeypatch.setenv("PYTHONHOME", "/tmp/python-home")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/project/src")
+    monkeypatch.setenv("PATH", "/tmp/project/.venv/bin:/usr/bin")
+
+    environment = teleop_session._ros_child_environment()
+
+    assert "VIRTUAL_ENV" not in environment
+    assert "PYTHONHOME" not in environment
+    assert "PYTHONPATH" not in environment
+    assert environment["PATH"] == "/usr/bin"
 
 
 def test_external_teleop_starts_in_order_and_stops_process_groups(tmp_path: Path, monkeypatch) -> None:
     config_path = Path(__file__).parents[1] / "configs" / "pika_sense_piper.example.yaml"
     config = teleop_session.load_teleop_config(config_path)
+    config = replace(
+        config,
+        sensor=replace(config.sensor, required_log_patterns=()),
+        controller=replace(config.controller, required_log_patterns=()),
+    )
     started: list[FakeProcess] = []
     commands: list[str] = []
     killed: list[tuple[int, signal.Signals]] = []
@@ -69,7 +89,7 @@ def test_repeat_session_restarts_independent_trajectory(monkeypatch) -> None:
         return next(reports)
 
     monkeypatch.setattr(teleop_session, "run_session", fake_run_session)
-    answers = iter(["y", "n"])
+    answers = iter([" ", "q"])
     report = teleop_session.run_sessions(
         "collect.yaml",
         "teleop.yaml",
@@ -101,6 +121,9 @@ def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path
         def return_codes(self) -> dict[str, int]:
             return {}
 
+        def health_errors(self) -> dict[str, str]:
+            return {}
+
         def stop(self) -> None:
             events.append("teleop-stop")
 
@@ -126,7 +149,7 @@ def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path
     monkeypatch.setattr(teleop_session, "ExternalTeleop", FakeTeleop)
     monkeypatch.setattr(teleop_session, "DataCollector", FakeCollector)
     monkeypatch.setattr(teleop_session, "load_teleop_config", lambda _: object())
-    answers = iter(["y", "y", "y", "", "s"])
+    answers = iter([" ", " ", " ", " "])
 
     report = teleop_session.run_session(
         "collect.yaml",

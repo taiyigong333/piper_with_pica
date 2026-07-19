@@ -65,6 +65,17 @@ robot:
   # TCP = 法兰末端反馈经工具偏移得到；未安装工具时保持 [0, 0, 0]。
   tool_offset_m: [0.0, 0.0, 0.0]
   base_to_robot: null
+  # 仅 enabled=true 时在遥操启动前移动到目标；joint 为 rad，tcp 为 [m, m, m, rad, rad, rad]。
+  initial_pose:
+    enabled: false
+    mode: joint
+    joint_positions_rad: null
+    tcp_pose: null
+    speed_percent: 10
+    timeout_s: 30
+    joint_tolerance_rad: 0.035
+    position_tolerance_m: 0.01
+    orientation_tolerance_rad: 0.1
 
 gripper:
   enabled: true

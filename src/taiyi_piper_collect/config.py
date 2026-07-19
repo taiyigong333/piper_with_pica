@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,6 +15,7 @@ import yaml
 from .errors import ConfigurationError
 
 PoseRepresentation = Literal["xyz_xyzw", "xyz_rxryrz"]
+InitialPoseMode = Literal["joint", "tcp"]
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,21 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class InitialPoseConfig:
+    """遥操开始前的 Piper 起始位姿控制参数。"""
+
+    enabled: bool = False
+    mode: InitialPoseMode = "joint"
+    joint_positions_rad: tuple[float, ...] | None = None
+    tcp_pose: tuple[float, ...] | None = None
+    speed_percent: int = 10
+    timeout_s: float = 30.0
+    joint_tolerance_rad: float = 0.035
+    position_tolerance_m: float = 0.01
+    orientation_tolerance_rad: float = 0.1
+
+
+@dataclass(frozen=True)
 class RobotConfig:
     name: str
     driver: str
@@ -81,6 +98,7 @@ class RobotConfig:
     dh_is_offset: int = 1
     tool_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
     base_to_robot: tuple[tuple[float, ...], ...] | None = None
+    initial_pose: InitialPoseConfig = field(default_factory=InitialPoseConfig)
 
 
 @dataclass(frozen=True)
@@ -140,6 +158,20 @@ def _matrix(value: Any, path: str) -> tuple[tuple[float, ...], ...] | None:
     return rows
 
 
+def _vector(value: Any, length: int, path: str) -> tuple[float, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != length:
+        raise ConfigurationError(f"{path} 必须是含 {length} 个数值的数组或 null。")
+    try:
+        vector = tuple(float(item) for item in value)
+    except (TypeError, ValueError) as error:
+        raise ConfigurationError(f"{path} 必须是含 {length} 个数值的数组或 null。") from error
+    if any(not math.isfinite(item) for item in vector):
+        raise ConfigurationError(f"{path} 不能包含 NaN 或 Inf。")
+    return vector
+
+
 def _camera(value: Any, index: int) -> CameraConfig:
     path = f"cameras[{index}]"
     raw = _mapping(value, path)
@@ -164,6 +196,45 @@ def _camera(value: Any, index: int) -> CameraConfig:
         depth_height=int(raw["depth_height"]) if raw.get("depth_height") is not None else None,
         base_to_camera=_matrix(raw.get("base_to_camera"), f"{path}.base_to_camera"),
     )
+
+
+def _initial_pose(value: Any, path: str) -> InitialPoseConfig:
+    raw = _mapping(value, path)
+    enabled = bool(raw.get("enabled", False))
+    mode = str(raw.get("mode", "joint"))
+    if mode not in {"joint", "tcp"}:
+        raise ConfigurationError(f"{path}.mode 只支持 joint 或 tcp。")
+    try:
+        speed_percent = int(raw.get("speed_percent", 10))
+    except (TypeError, ValueError) as error:
+        raise ConfigurationError(f"{path}.speed_percent 必须是 1 到 100 的整数。") from error
+    if not 1 <= speed_percent <= 100:
+        raise ConfigurationError(f"{path}.speed_percent 必须是 1 到 100 的整数。")
+    initial_pose = InitialPoseConfig(
+        enabled=enabled,
+        mode=mode,  # type: ignore[arg-type]
+        joint_positions_rad=_vector(raw.get("joint_positions_rad"), 6, f"{path}.joint_positions_rad"),
+        tcp_pose=_vector(raw.get("tcp_pose"), 6, f"{path}.tcp_pose"),
+        speed_percent=speed_percent,
+        timeout_s=_positive_number(raw.get("timeout_s", 30.0), f"{path}.timeout_s"),
+        joint_tolerance_rad=_positive_number(
+            raw.get("joint_tolerance_rad", 0.035), f"{path}.joint_tolerance_rad"
+        ),
+        position_tolerance_m=_positive_number(
+            raw.get("position_tolerance_m", 0.01), f"{path}.position_tolerance_m"
+        ),
+        orientation_tolerance_rad=_positive_number(
+            raw.get("orientation_tolerance_rad", 0.1), f"{path}.orientation_tolerance_rad"
+        ),
+    )
+    if enabled:
+        selected_target = (
+            initial_pose.joint_positions_rad if initial_pose.mode == "joint" else initial_pose.tcp_pose
+        )
+        if selected_target is None:
+            target_key = "joint_positions_rad" if initial_pose.mode == "joint" else "tcp_pose"
+            raise ConfigurationError(f"启用 {path} 时必须填写 {path}.{target_key}。")
+    return initial_pose
 
 
 def load_config(path: str | Path) -> CollectConfig:
@@ -243,13 +314,9 @@ def load_config(path: str | Path) -> CollectConfig:
         )
 
     robot_raw = _mapping(_required(raw, "robot", "根配置"), "robot")
-    tool_offset_raw = robot_raw.get("tool_offset_m", [0.0, 0.0, 0.0])
-    if not isinstance(tool_offset_raw, list) or len(tool_offset_raw) != 3:
+    tool_offset = _vector(robot_raw.get("tool_offset_m", [0.0, 0.0, 0.0]), 3, "robot.tool_offset_m")
+    if tool_offset is None:
         raise ConfigurationError("robot.tool_offset_m 必须为三个数值（m）。")
-    try:
-        tool_offset = tuple(float(value) for value in tool_offset_raw)
-    except (TypeError, ValueError) as error:
-        raise ConfigurationError("robot.tool_offset_m 必须为三个数值（m）。") from error
     robot = RobotConfig(
         name=str(_required(robot_raw, "name", "robot")),
         driver=str(_required(robot_raw, "driver", "robot")),
@@ -258,6 +325,7 @@ def load_config(path: str | Path) -> CollectConfig:
         dh_is_offset=int(robot_raw.get("dh_is_offset", 1)),
         tool_offset_m=tool_offset,  # type: ignore[arg-type]
         base_to_robot=_matrix(robot_raw.get("base_to_robot"), "robot.base_to_robot"),
+        initial_pose=_initial_pose(robot_raw.get("initial_pose", {}), "robot.initial_pose"),
     )
     if robot.driver == "piper":
         if robot.joint_count != 6:
@@ -266,6 +334,10 @@ def load_config(path: str | Path) -> CollectConfig:
             raise ConfigurationError("Piper 需要配置 robot.can_name。")
         if robot.dh_is_offset not in {0, 1}:
             raise ConfigurationError("robot.dh_is_offset 只支持 0 或 1。")
+        if robot.initial_pose.enabled and robot.initial_pose.mode == "tcp" and session.pose_representation != "xyz_rxryrz":
+            raise ConfigurationError("robot.initial_pose.mode=tcp 需要 session.pose_representation=xyz_rxryrz。")
+    elif robot.initial_pose.enabled:
+        raise ConfigurationError("robot.initial_pose.enabled=true 当前仅支持 robot.driver=piper。")
 
     gripper_raw = _mapping(raw.get("gripper", {}), "gripper")
     gripper = GripperConfig(enabled=bool(gripper_raw.get("enabled", False)), driver=str(gripper_raw.get("driver", "none")))

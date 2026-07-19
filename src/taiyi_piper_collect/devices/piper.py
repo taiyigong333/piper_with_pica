@@ -59,6 +59,26 @@ def gripper_stroke_to_m(stroke_in_micrometers: int | float) -> float:
     return stroke_m
 
 
+def read_piper_robot_state(interface: Any, config: RobotConfig, pose_representation: str) -> RobotState:
+    """将 Piper SDK 的原始反馈转换为采集与控制共用的标准状态。"""
+
+    joints_message = interface.GetArmJointMsgs().joint_state
+    end_pose = interface.GetArmEndPoseMsgs().end_pose
+    joint_values = [getattr(joints_message, f"joint_{index}") for index in range(1, 7)]
+    joints_rad = np.asarray(joint_values, dtype=np.float64) * (math.pi / 180000.0)
+    position_m = np.asarray([end_pose.X_axis, end_pose.Y_axis, end_pose.Z_axis], dtype=np.float64) * 1e-6
+    euler_rad = np.asarray([end_pose.RX_axis, end_pose.RY_axis, end_pose.RZ_axis], dtype=np.float64) * (
+        math.pi / 180000.0
+    )
+    quaternion = np.asarray(euler_xyz_to_xyzw(euler_rad), dtype=np.float64)
+    position_m += rotate_vector_xyzw(quaternion, np.asarray(config.tool_offset_m, dtype=np.float64))
+    orientation = euler_rad if pose_representation == "xyz_rxryrz" else quaternion
+    tcp_pose = np.concatenate((position_m, orientation))
+    if not np.isfinite(joints_rad).all() or not np.isfinite(tcp_pose).all():
+        raise DeviceError("Piper 返回 NaN 或 Inf。")
+    return RobotState(timestamp=time.time(), joint_positions=joints_rad, tcp_pose=tcp_pose)
+
+
 class PiperRobot(RobotDevice):
     """通过 `piper_sdk` 读取 CAN 反馈，严格不下发运动或初始化查询指令。"""
 
@@ -92,20 +112,7 @@ class PiperRobot(RobotDevice):
         if self._interface is None:
             raise DeviceError("Piper 尚未启动。")
         try:
-            joints_message = self._interface.GetArmJointMsgs().joint_state
-            end_pose = self._interface.GetArmEndPoseMsgs().end_pose
-            joint_values = [getattr(joints_message, f"joint_{index}") for index in range(1, 7)]
-            joints_rad = np.asarray(joint_values, dtype=np.float64) * (math.pi / 180000.0)
-            position_m = np.asarray([end_pose.X_axis, end_pose.Y_axis, end_pose.Z_axis], dtype=np.float64) * 1e-6
-            euler_rad = np.asarray([end_pose.RX_axis, end_pose.RY_axis, end_pose.RZ_axis], dtype=np.float64) * (math.pi / 180000.0)
-            quaternion = np.asarray(euler_xyz_to_xyzw(euler_rad), dtype=np.float64)
-            position_m += rotate_vector_xyzw(quaternion, np.asarray(self._config.tool_offset_m, dtype=np.float64))
-            # 工具偏移需要旋转矩阵，但落盘表示必须遵守现场配置。
-            orientation = euler_rad if self._pose_representation == "xyz_rxryrz" else quaternion
-            tcp_pose = np.concatenate((position_m, orientation))
-            if not np.isfinite(joints_rad).all() or not np.isfinite(tcp_pose).all():
-                raise DeviceError("Piper 返回 NaN 或 Inf。")
-            return RobotState(timestamp=time.time(), joint_positions=joints_rad, tcp_pose=tcp_pose)
+            return read_piper_robot_state(self._interface, self._config, self._pose_representation)
         except DeviceError:
             raise
         except Exception as error:

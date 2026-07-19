@@ -6,15 +6,15 @@
 
 ## 环境与安装
 
-项目使用 `uv` 管理依赖。锁文件要求 Python `>=3.10`；当前环境统一使用 uv 管理的 Python 3.11 虚拟环境，不使用 `pip` 或 Conda 安装项目依赖。安装 Git 和 `uv` 后，按以下顺序执行：
+项目使用 `uv` 管理依赖，并固定使用 Python 3.10；不使用 `pip` 或 Conda 安装项目依赖。该约束与 ROS Humble/Pika 所需的 Python 3.10 一致，但项目 `.venv/` 仍与系统 Python、`pika` Conda 环境完全隔离。安装 Git 和 `uv` 后，按以下顺序执行：
 
 ```bash
 # 克隆工程，并将 Piper SDK 子模块一并下载。
 git clone --recurse-submodules git@github.com:taiyigong333/piper_with_pica.git
 # 进入刚克隆的工程根目录。
 cd piper_with_pica
-# 创建项目专用的 Python 3.11 虚拟环境，不安装依赖。
-UV_CACHE_DIR=/tmp/uv-cache uv venv --python 3.11
+# 创建项目专用的 Python 3.10 虚拟环境，不安装依赖；不会修改系统 Python。
+UV_CACHE_DIR=/tmp/uv-cache uv venv --python 3.10
 # 根据 uv.lock 安装运行、测试和 RealSense 依赖。
 UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev --extra realsense
 ```
@@ -64,7 +64,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect validate <trajectory_path>/traje
    cp configs/piper_d405_d435.example.yaml configs/现场_piper.yaml
    ```
 
-   必填项为两台相机的 `serial_number`、`base_to_robot`、每台相机的 `base_to_camera`、`tool_offset_m`、任务指令和采集员哈希。未知的标定量必须保留 `null`，不能填单位矩阵。
+   必填项为两台相机的 `serial_number`、`base_to_robot`、每台相机的 `base_to_camera`、`tool_offset_m`、任务指令和采集员哈希。未知的标定量必须保留 `null`，不能填单位矩阵。若要让遥操会话自动移动到起始位姿，填写 `robot.initial_pose` 的目标并设为 `enabled: true`；`joint_positions_rad` 是六关节 rad，`tcp_pose` 是 `[x,y,z,rx,ry,rz]` 的 m + rad，且只填写 `mode` 对应的一项。
 2. 由现场人员启用 Piper 的 SocketCAN 接口，并执行下列只读命令核对名称与 `robot.can_name` 一致。本工程不配置 CAN，也不发送任何运动、使能或复位指令：
 
    ```bash
@@ -87,6 +87,14 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect validate <trajectory_path>/traje
    ```
 
    仅当输出的 `result` 为 `pass`，且关节、TCP、夹爪行程和相机分辨率均符合现场预期时才继续。Piper 夹爪读取 `GetArmGripperMsgs().gripper_state.grippers_angle`，SDK 原始单位为 `0.001 mm`，本工程写入 HDF5 前转换为米；预检会等待最多 1 秒的 `0x2A8` 首帧，未收到时明确失败，不会将 SDK 默认的 `0.0` 当作真实行程。该值是夹爪行程，非标准夹爪机构的指尖距离需另行标定。
+
+   起始位姿可先用以下只读命令记录当前关节角和 TCP，输出单位与 YAML 完全一致：
+
+   ```bash
+   # 只读输出六关节 rad 与当前配置表示的 TCP；不使能、不移动 Piper。
+   UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect read-piper-state \
+     --config configs/现场_piper.yaml
+   ```
 5. 采集与校验：
 
    ```bash
@@ -109,14 +117,14 @@ cp configs/pika_sense_piper.example.yaml configs/现场_pika_sense.yaml
 # 执行 Pika 基站强制校准；该命令会调用现场 survive-cli，不采集 HDF5。
 UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect calibrate-base \
   --teleop-config configs/现场_pika_sense.yaml --mode force
-# 启动传感器、已有 ROS 遥操和采集会话；每条轨迹结束后询问是否继续下一条。
+# 启动传感器、已有 ROS 遥操和采集会话；每条保存后按空格开始下一条。
 UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect teleop-session \
   --config configs/现场_piper.yaml \
   --teleop-config configs/现场_pika_sense.yaml \
   --repeat
 ```
 
-会话会在操作员确认 Sense 夹爪已双击启用遥操之后，才启动数据采集。结束时先在实体设备侧停止遥操，再按 Enter，并选择保存或删除该条轨迹。完整的安全流程、配置对应关系和已有 ROS 代码的边界见 [docs/2026-07-18_02_Pika_Sense遥操采集流程.md](docs/2026-07-18_02_Pika_Sense遥操采集流程.md)。
+会话所有阶段均按单个空格推进：校准完成、预检后的安全确认、Sense 双击并实际跟随、以及实体设备停止遥操之后。按 `q` 取消，不再输入 `yes/no`。每条轨迹默认保存，只有显式追加 `--on-complete delete` 才会删除。编排层启动 ROS 前会移除 uv 的 Python 环境变量，并检查关键 ROS 节点日志；`pika_ros` 的代码和 launch 文件不会被修改。完整流程见 [docs/2026-07-18_02_Pika_Sense遥操采集流程.md](docs/2026-07-18_02_Pika_Sense遥操采集流程.md)。
 
 ## 配置与扩展
 
@@ -125,6 +133,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect teleop-session \
 - `acquisition.robot_hz` 和 `acquisition.camera_rig_hz` 分别控制原始状态采样及相机对齐时间轴。
 - `cameras` 是可扩展列表；每台相机都通过 `driver` 注册到设备工厂。
 - `robot.driver` 目前支持 `piper` 和 `mock`。接入新机械臂时实现 `RobotDevice`，并保证向核心层提供标准单位的 `RobotState`。
+- `robot.initial_pose` 仅供 `teleop-session` 在已有 ROS 遥操启动前使用；采集与 `preflight` 仍严格只读。TCP 目标使用与采集一致的物理 TCP，控制时会反算 `tool_offset_m` 后下发 Piper 原生末端坐标。
 - 保持 `session.format_version`、字段名、单位或编码发生不兼容变化时，必须提升格式版本，并同步更新 `quality.py`。
 
 文档按日期和同日序号排序；交接文档不参与排序。详细边界、数据流和现场接入项见 [docs/2026-07-18_01_架构与数据契约.md](docs/2026-07-18_01_架构与数据契约.md)、[docs/2026-07-18_02_Pika_Sense遥操采集流程.md](docs/2026-07-18_02_Pika_Sense遥操采集流程.md) 和 [docs/项目交接.md](docs/项目交接.md)。

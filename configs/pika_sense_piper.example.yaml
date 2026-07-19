@@ -22,6 +22,8 @@ sensor:
     exec bash start_single_sensor_whit_teleop.bash
   # 仅用于发现“命令立即退出”；不能证明定位或遥操链路已准备完成。
   startup_wait_s: 3.0
+  required_log_patterns: ["serial Started"] # 串口节点必须在采集前完成启动。
+  failure_log_patterns: ["sudo: a terminal is required", "sudo: 需要密码"] # sudo 凭据失效时阻止会话继续。
 
 controller:
   name: piper_controller
@@ -32,3 +34,6 @@ controller:
     conda activate pika &&
     exec ros2 launch pika_remote_agx_arm teleop_single_piper.launch.py
   startup_wait_s: 5.0
+  # 编排层会移除 uv 的 VIRTUAL_ENV/PYTHONPATH，令此命令使用 pika 的 Python 3.10。
+  required_log_patterns: ["arm_ik_pose_node.py", "pub_delta_pose.py"]
+  failure_log_patterns: ["Traceback (most recent call last)", "ModuleNotFoundError", "process has died"]
