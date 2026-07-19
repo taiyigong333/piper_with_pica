@@ -18,14 +18,6 @@ from ..models import RobotState
 from .piper import euler_xyz_to_xyzw, read_piper_robot_state, rotate_vector_xyzw
 
 
-_JOINT_LIMITS_RAD = (
-    (-2.6179, 2.6179),
-    (0.0, 3.14),
-    (-2.967, 0.0),
-    (-1.745, 1.745),
-    (-1.22, 1.22),
-    (-2.09439, 2.09439),
-)
 _RAD_TO_MILLI_DEG = 180000.0 / math.pi
 _COMMAND_INTERVAL_S = 0.05
 
@@ -126,13 +118,10 @@ class PiperInitialPoseController:
             values = self._initial_pose.joint_positions_rad
             if values is None:
                 raise DeviceError("缺少 robot.initial_pose.joint_positions_rad。")
-            target = np.asarray(values, dtype=np.float64)
-            for index, (value, limits) in enumerate(zip(target, _JOINT_LIMITS_RAD), start=1):
-                if not limits[0] <= value <= limits[1]:
-                    raise DeviceError(
-                        f"robot.initial_pose.joint_positions_rad[{index - 1}]={value:.6f} 超出 Piper J{index} 安全范围。"
-                    )
-            return target
+            # Piper SDK 示例中的固定软件限位与现场固件反馈并不总是一致，且 SDK 默认
+            # 也不启用该限位。不能因陈旧的静态表拒绝“回到当前实测姿态”；最终限位由
+            # 机械臂固件执行。本模块仍保留低速、超时和反馈到位检查。
+            return np.asarray(values, dtype=np.float64)
         values = self._initial_pose.tcp_pose
         if values is None:
             raise DeviceError("缺少 robot.initial_pose.tcp_pose。")

@@ -71,6 +71,21 @@ def test_joint_initial_pose_sends_native_units_and_disconnects() -> None:
     assert state.joint_positions.tolist() == target
 
 
+def test_joint_initial_pose_accepts_live_firmware_feedback_outside_sdk_example_range() -> None:
+    # 现场固件反馈的 J5 可超过 SDK 示例的 1.22 rad 静态表，回到该实测位置不能被拒绝。
+    target = [0.01, 0.86, -1.02, -0.07, 1.33, 0.26]
+    interface = FakePiperInterface(target, [0.13, 0.0, 0.36, 3.07, 0.49, 2.87])
+    controller = PiperInitialPoseController(
+        RobotConfig(name="piper", driver="piper", can_name="can0"),
+        InitialPoseConfig(enabled=True, mode="joint", joint_positions_rad=tuple(target)),
+        interface_factory=lambda *_: interface,
+    )
+
+    controller.move()
+
+    assert interface.joint_commands == [tuple(round(value * 180000.0 / math.pi) for value in target)]
+
+
 def test_tcp_initial_pose_converts_physical_tcp_to_flange_command() -> None:
     target = [0.2, 0.2, 0.3, 0.0, 0.0, math.pi / 2]
     # 工具在 J6 x 轴正向偏置 0.1 m，旋转后沿世界 y 轴；法兰目标 y 应减去该偏置。
