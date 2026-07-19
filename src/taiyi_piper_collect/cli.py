@@ -12,6 +12,7 @@ from .config import load_config
 from .errors import CollectionError, ConfigurationError, DeviceError, HardwareDependencyError
 from .preflight import discover_realsense, preflight
 from .quality import validate_hdf5
+from .teleop_session import load_teleop_config, run_calibration, run_sessions
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -27,6 +28,16 @@ def _parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--config", required=True, help="YAML 配置路径")
     discover = subparsers.add_parser("discover-realsense", help="列出可见的 RealSense 设备")
     discover.add_argument("--require-device", action="store_true", help="未发现设备时返回失败码")
+    calibrate = subparsers.add_parser("calibrate-base", help="执行 Pika 基站校准或定位诊断")
+    calibrate.add_argument("--teleop-config", required=True, help="遥操 YAML 配置路径")
+    calibrate.add_argument("--mode", choices=("force", "diagnose"), required=True, help="force 用于首次、硬件或频道变更")
+    teleop_session = subparsers.add_parser("teleop-session", help="按安全顺序执行一条遥操-采集会话")
+    teleop_session.add_argument("--config", required=True, help="采集 YAML 配置路径")
+    teleop_session.add_argument("--teleop-config", required=True, help="遥操 YAML 配置路径")
+    teleop_session.add_argument("--duration", type=float, help="可选采集上限（秒）；未设时由结束遥操确认收尾")
+    teleop_session.add_argument("--on-complete", choices=("save", "delete"), help="跳过保存/删除的交互选择")
+    teleop_session.add_argument("--yes", action="store_true", help="跳过现场确认；仅限自动化无硬件验证")
+    teleop_session.add_argument("--repeat", action="store_true", help="保存或删除后询问是否采集下一条独立轨迹")
     return parser
 
 
@@ -57,6 +68,21 @@ def main(argv: list[str] | None = None) -> int:
             report = preflight(load_config(args.config))
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report["result"] == "pass" else 1
+        if args.command == "calibrate-base":
+            run_calibration(load_teleop_config(args.teleop_config), args.mode)
+            print(json.dumps({"result": "pass", "mode": args.mode}, ensure_ascii=False))
+            return 0
+        if args.command == "teleop-session":
+            report = run_sessions(
+                args.config,
+                args.teleop_config,
+                duration_s=args.duration,
+                on_complete=args.on_complete,
+                assume_yes=args.yes,
+                repeat=args.repeat,
+            )
+            print(json.dumps(report, ensure_ascii=False))
+            return 0
         report = discover_realsense()
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["device_count"] or not args.require_device else 1

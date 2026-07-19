@@ -1,0 +1,423 @@
+"""Pika Sense 遥操与数据采集的会话编排。
+
+本模块只管理外部进程和采集器的启动顺序，不导入或修改 ROS 遥操工程。Sense
+夹爪的双击状态没有可用的稳定机器接口，因此必须由现场操作员显式确认后才开始采集。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+from typing import Any, Callable
+
+import yaml
+
+from .collector import CollectionResult, DataCollector
+from .config import CollectConfig, load_config
+from .errors import CollectionError, ConfigurationError
+from .preflight import preflight
+
+
+@dataclass(frozen=True)
+class TeleopCommand:
+    """一个保持运行的外部 ROS 启动命令。"""
+
+    name: str
+    command: str
+    startup_wait_s: float = 3.0
+
+
+@dataclass(frozen=True)
+class TeleopConfig:
+    """与采集 YAML 分离的遥操进程配置。"""
+
+    source_path: Path
+    pre_start_command: str | None
+    force_calibration_command: str
+    diagnose_calibration_command: str
+    sensor: TeleopCommand
+    controller: TeleopCommand
+
+
+@dataclass
+class _ManagedProcess:
+    command: TeleopCommand
+    process: Any
+    log_file: Any
+    log_path: Path
+
+
+def _mapping(value: Any, path: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ConfigurationError(f"{path} 必须是对象。")
+    return value
+
+
+def _required(mapping: dict[str, Any], key: str, path: str) -> Any:
+    if key not in mapping:
+        raise ConfigurationError(f"缺少必填配置：{path}.{key}")
+    return mapping[key]
+
+
+def _command(value: Any, path: str, default_name: str) -> TeleopCommand:
+    raw = _mapping(value, path)
+    command = str(_required(raw, "command", path)).strip()
+    if not command:
+        raise ConfigurationError(f"{path}.command 不能为空。")
+    try:
+        startup_wait_s = float(raw.get("startup_wait_s", 3.0))
+    except (TypeError, ValueError) as error:
+        raise ConfigurationError(f"{path}.startup_wait_s 必须为非负数。") from error
+    if startup_wait_s < 0:
+        raise ConfigurationError(f"{path}.startup_wait_s 必须为非负数。")
+    return TeleopCommand(name=str(raw.get("name", default_name)), command=command, startup_wait_s=startup_wait_s)
+
+
+def load_teleop_config(path: str | Path) -> TeleopConfig:
+    """读取遥操编排配置，不接触任何硬件。"""
+
+    source_path = Path(path).expanduser().resolve()
+    try:
+        with source_path.open("r", encoding="utf-8") as file:
+            raw = _mapping(yaml.safe_load(file), "遥操根配置")
+    except OSError as error:
+        raise ConfigurationError(f"无法读取遥操配置 {source_path}：{error}") from error
+
+    calibration = _mapping(_required(raw, "calibration", "遥操根配置"), "calibration")
+    force_command = str(_required(calibration, "force_command", "calibration")).strip()
+    diagnose_command = str(_required(calibration, "diagnose_command", "calibration")).strip()
+    if not force_command or not diagnose_command:
+        raise ConfigurationError("calibration 中的命令不能为空。")
+    pre_start = raw.get("pre_start_command")
+    if pre_start is not None and not str(pre_start).strip():
+        raise ConfigurationError("pre_start_command 不能是空字符串；不需要时请设为 null。")
+    return TeleopConfig(
+        source_path=source_path,
+        pre_start_command=str(pre_start).strip() if pre_start is not None else None,
+        force_calibration_command=force_command,
+        diagnose_calibration_command=diagnose_command,
+        sensor=_command(_required(raw, "sensor", "遥操根配置"), "sensor", "pika-sense"),
+        controller=_command(_required(raw, "controller", "遥操根配置"), "controller", "piper-controller"),
+    )
+
+
+class ExternalTeleop:
+    """启动、监视并按进程组关闭既有的遥操命令。"""
+
+    def __init__(self, config: TeleopConfig) -> None:
+        self.config = config
+        self._processes: list[_ManagedProcess] = []
+
+    def run_pre_start(self) -> None:
+        """在主终端执行必要的前置动作，例如缓存 sudo 凭据。"""
+
+        if self.config.pre_start_command is None:
+            return
+        try:
+            subprocess.run(["bash", "-lc", self.config.pre_start_command], check=True)
+        except subprocess.CalledProcessError as error:
+            raise CollectionError(f"遥操前置命令失败（退出码 {error.returncode}）。") from error
+
+    def start(self, log_directory: Path) -> None:
+        """按传感器、控制器顺序启动，并确认每个进程没有立即退出。"""
+
+        log_directory.mkdir(parents=True, exist_ok=True)
+        try:
+            for command in (self.config.sensor, self.config.controller):
+                self._start_command(command, log_directory)
+        except BaseException:
+            self.stop()
+            raise
+
+    def _start_command(self, command: TeleopCommand, log_directory: Path) -> None:
+        log_path = log_directory / f"{command.name}.log"
+        log_file = log_path.open("a", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                ["bash", "-lc", command.command],
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except BaseException:
+            log_file.close()
+            raise
+        managed = _ManagedProcess(command=command, process=process, log_file=log_file, log_path=log_path)
+        self._processes.append(managed)
+        if command.startup_wait_s:
+            time.sleep(command.startup_wait_s)
+        return_code = process.poll()
+        if return_code is not None:
+            log_file.flush()
+            raise CollectionError(
+                f"遥操进程 {command.name} 在启动后退出（退出码 {return_code}）。请查看日志：{log_path}"
+            )
+
+    def return_codes(self) -> dict[str, int]:
+        """返回异常退出的子进程及其退出码。"""
+
+        return_codes: dict[str, int] = {}
+        for managed in self._processes:
+            return_code = managed.process.poll()
+            if return_code is not None:
+                return_codes[managed.command.name] = int(return_code)
+        return return_codes
+
+    def stop(self, timeout_s: float = 8.0) -> None:
+        """从后向前关闭进程组，确保 ros2 launch 派生的节点一并退出。"""
+
+        for managed in reversed(self._processes):
+            process = managed.process
+            try:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=timeout_s)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait(timeout=2.0)
+            except ProcessLookupError:
+                pass
+            finally:
+                managed.log_file.close()
+        self._processes.clear()
+
+
+def run_calibration(teleop_config: TeleopConfig, mode: str) -> None:
+    """执行用户明确选择的基站校准/诊断命令。"""
+
+    if mode == "force":
+        command = teleop_config.force_calibration_command
+    elif mode == "diagnose":
+        command = teleop_config.diagnose_calibration_command
+    else:
+        raise ConfigurationError("校准模式只支持 force 或 diagnose。")
+    try:
+        subprocess.run(["bash", "-lc", command], check=True)
+    except subprocess.CalledProcessError as error:
+        raise CollectionError(f"基站{mode}命令失败（退出码 {error.returncode}）。") from error
+
+
+def _confirm(message: str, *, assume_yes: bool, input_fn: Callable[[str], str]) -> None:
+    if assume_yes:
+        return
+    answer = input_fn(f"{message} [y/N]: ").strip().lower()
+    if answer not in {"y", "yes"}:
+        raise CollectionError("操作员未确认，已取消会话；未启动数据采集。")
+
+
+def _preflight_or_raise(config: CollectConfig) -> None:
+    report = preflight(config)
+    if report["result"] != "pass":
+        errors = "; ".join(report["errors"])
+        raise CollectionError(f"采集预检失败：{errors}")
+
+
+def _delete_result(result: CollectionResult, config: CollectConfig) -> None:
+    trajectory_dir = result.trajectory_path.parent.resolve()
+    output_root = config.session.output_root.resolve()
+    if not trajectory_dir.is_relative_to(output_root):
+        raise CollectionError(f"拒绝删除输出根目录之外的轨迹：{trajectory_dir}")
+    shutil.rmtree(trajectory_dir)
+
+
+def _completion_action(
+    result: CollectionResult,
+    config: CollectConfig,
+    preset: str | None,
+    input_fn: Callable[[str], str],
+) -> str:
+    action = preset
+    while action is None:
+        answer = input_fn("本条遥操已结束。保存 [s] 或删除 [d]: ").strip().lower()
+        action = {"s": "save", "save": "save", "d": "delete", "delete": "delete"}.get(answer)
+    if action == "delete":
+        _delete_result(result, config)
+    return action
+
+
+def run_session(
+    config_path: str | Path,
+    teleop_config_path: str | Path,
+    *,
+    duration_s: float | None = None,
+    on_complete: str | None = None,
+    assume_yes: bool = False,
+    input_fn: Callable[[str], str] = input,
+    output_fn: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """执行一条人工遥操轨迹，并返回保存或删除后的会话摘要。"""
+
+    config = load_config(config_path)
+    teleop_config = load_teleop_config(teleop_config_path)
+    if on_complete not in {None, "save", "delete"}:
+        raise ConfigurationError("on_complete 只支持 save、delete 或 null。")
+
+    _confirm("已按现场情况完成基站校准（首次/基站或频道变更必须 force 校准）", assume_yes=assume_yes, input_fn=input_fn)
+    _preflight_or_raise(config)
+    _confirm("Piper 已由获授权人员安全移动至本条轨迹的起始位姿", assume_yes=assume_yes, input_fn=input_fn)
+
+    log_directory = config.session.output_root / "teleop_logs" / datetime.now().strftime("%Y%m%dT%H%M%S")
+    teleop = ExternalTeleop(teleop_config)
+    stop_request = threading.Event()
+    result_box: dict[str, CollectionResult] = {}
+    error_box: dict[str, BaseException] = {}
+
+    def collect() -> None:
+        try:
+            result_box["result"] = DataCollector(config).run(
+                duration_s=duration_s,
+                stop_request=stop_request,
+                until_stopped=duration_s is None,
+            )
+        except BaseException as error:
+            error_box["error"] = error
+
+    def wait_for_manual_stop() -> None:
+        try:
+            input_fn("Sense 夹爪双击已启用遥操后开始采集；结束时先停止遥操，再按 Enter 收尾本条数据。")
+        except EOFError:
+            error_box["manual_stop"] = CollectionError("未收到结束遥操的终端确认。")
+        finally:
+            stop_request.set()
+
+    try:
+        teleop.run_pre_start()
+        teleop.start(log_directory)
+        _confirm("已确认两个遥操进程正常运行，并已双击 Sense 夹爪启用遥操", assume_yes=assume_yes, input_fn=input_fn)
+        output_fn(f"遥操日志目录：{log_directory}")
+        collector_thread = threading.Thread(target=collect, name="teleop-data-collector", daemon=True)
+        collector_thread.start()
+        manual_stop_thread = threading.Thread(target=wait_for_manual_stop, name="manual-stop-listener", daemon=True)
+        manual_stop_thread.start()
+
+        while collector_thread.is_alive():
+            return_codes = teleop.return_codes()
+            if return_codes:
+                stop_request.set()
+                collector_thread.join(timeout=30.0)
+                raise CollectionError(f"遥操进程异常退出：{return_codes}")
+            if "manual_stop" in error_box:
+                stop_request.set()
+                collector_thread.join(timeout=30.0)
+                raise error_box["manual_stop"]
+            time.sleep(0.1)
+        collector_thread.join()
+        if "error" in error_box:
+            error = error_box["error"]
+            if isinstance(error, CollectionError):
+                raise error
+            raise CollectionError(f"采集失败：{type(error).__name__}: {error}") from error
+
+        # 设置 --duration 时仍须由操作员先结束遥操；不能让已停止写入的轨迹外继续运动。
+        while not stop_request.is_set():
+            return_codes = teleop.return_codes()
+            if return_codes:
+                raise CollectionError(f"遥操进程异常退出：{return_codes}")
+            time.sleep(0.1)
+    finally:
+        stop_request.set()
+        teleop.stop()
+
+    result = result_box.get("result")
+    if result is None:
+        raise CollectionError("采集未返回结果。")
+    action = _completion_action(result, config, on_complete, input_fn)
+    return {
+        "result": "pass",
+        "action": action,
+        "trajectory_id": result.trajectory_id,
+        "trajectory_path": str(result.trajectory_path),
+        "quality_path": str(result.quality_path),
+        "manifest_path": str(result.manifest_path),
+        "trajectory_length": result.writer_report.trajectory_length,
+        "teleop_log_directory": str(log_directory),
+    }
+
+
+def run_sessions(
+    config_path: str | Path,
+    teleop_config_path: str | Path,
+    *,
+    duration_s: float | None = None,
+    on_complete: str | None = None,
+    assume_yes: bool = False,
+    repeat: bool = False,
+    input_fn: Callable[[str], str] = input,
+    output_fn: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """顺序执行一条或多条独立遥操轨迹。"""
+
+    reports: list[dict[str, Any]] = []
+    while True:
+        reports.append(
+            run_session(
+                config_path,
+                teleop_config_path,
+                duration_s=duration_s,
+                on_complete=on_complete,
+                assume_yes=assume_yes,
+                input_fn=input_fn,
+                output_fn=output_fn,
+            )
+        )
+        if not repeat:
+            return reports[0]
+        answer = input_fn("继续采集下一条独立轨迹 [y/N]: ").strip().lower()
+        if answer not in {"y", "yes"}:
+            return {"result": "pass", "trajectory_count": len(reports), "sessions": reports}
+
+
+def _parser() -> Any:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Pika Sense 遥操与 Piper 数据采集会话编排")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    calibrate = subparsers.add_parser("calibrate", help="执行基站校准或定位诊断")
+    calibrate.add_argument("--teleop-config", required=True, help="遥操 YAML 配置路径")
+    calibrate.add_argument("--mode", choices=("force", "diagnose"), required=True, help="force 用于首次/硬件或频道变更")
+    session = subparsers.add_parser("run", help="按安全顺序执行一条遥操-采集会话")
+    session.add_argument("--config", required=True, help="采集 YAML 配置路径")
+    session.add_argument("--teleop-config", required=True, help="遥操 YAML 配置路径")
+    session.add_argument("--duration", type=float, help="可选采集上限（秒）；未设时由结束遥操确认收尾")
+    session.add_argument("--on-complete", choices=("save", "delete"), help="跳过保存/删除的交互选择")
+    session.add_argument("--yes", action="store_true", help="跳过现场确认；仅限自动化无硬件验证")
+    session.add_argument("--repeat", action="store_true", help="保存或删除后询问是否采集下一条独立轨迹")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        teleop_config = load_teleop_config(args.teleop_config)
+        if args.command == "calibrate":
+            run_calibration(teleop_config, args.mode)
+            print(json.dumps({"result": "pass", "mode": args.mode}, ensure_ascii=False))
+            return 0
+        report = run_sessions(
+            args.config,
+            args.teleop_config,
+            duration_s=args.duration,
+            on_complete=args.on_complete,
+            assume_yes=args.yes,
+            repeat=args.repeat,
+        )
+        print(json.dumps(report, ensure_ascii=False))
+        return 0
+    except (CollectionError, ConfigurationError) as error:
+        print(json.dumps({"result": "fail", "error": f"{type(error).__name__}: {error}"}, ensure_ascii=False), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -101,13 +101,24 @@ class DataCollector:
     def __init__(self, config: CollectConfig) -> None:
         self.config = config
 
-    def run(self, duration_s: float | None = None) -> CollectionResult:
-        """执行一次有限时长采集，成功时生成可交付的数据包。"""
+    def run(
+        self,
+        duration_s: float | None = None,
+        *,
+        stop_request: threading.Event | None = None,
+        until_stopped: bool = False,
+    ) -> CollectionResult:
+        """执行一次采集。
 
-        duration = duration_s if duration_s is not None else self.config.session.duration_s
-        if duration is None:
-            raise CollectionError("未设置采集时长；请提供 --duration 或 session.duration_s。")
-        if duration <= 0:
+        常规 ``collect`` 使用有限时长，保持原有接口语义。遥操会话由外部人工结束，
+        因此可传入 ``stop_request`` 并设置 ``until_stopped=True``；这样只有操作员
+        已停止遥操后，编排层才会请求采集器收尾并发布正式数据包。
+        """
+
+        duration = None if until_stopped else (duration_s if duration_s is not None else self.config.session.duration_s)
+        if duration is None and stop_request is None:
+            raise CollectionError("未设置采集时长；请提供 --duration、session.duration_s 或外部停止信号。")
+        if duration is not None and duration <= 0:
             raise CollectionError("采集时长必须为正数。")
         trajectory_id = self.config.session.trajectory_id or self._make_trajectory_id()
         trajectory_dir = (
@@ -211,13 +222,18 @@ class DataCollector:
             if latest_state.get() is None:
                 raise CollectionError("机器人反馈预热超时，未开始相机采集。")
             camera_worker.start()
-            deadline = time.monotonic() + duration
-            while not stop_event.is_set() and time.monotonic() < deadline:
-                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            deadline = time.monotonic() + duration if duration is not None else None
+            while not stop_event.is_set() and not (stop_request is not None and stop_request.is_set()):
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                if deadline is None:
+                    time.sleep(0.05)
+                else:
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
             for worker in workers:
                 if worker.error is not None:
                     raise CollectionError(f"{worker.name} 失败：{type(worker.error).__name__}: {worker.error}")
-            if stop_event.is_set() and time.monotonic() < deadline:
+            if stop_event.is_set() and (deadline is None or time.monotonic() < deadline):
                 raise CollectionError("采集在达到目标时长前被停止。")
         except BaseException as error:
             primary_error = error

@@ -1,0 +1,34 @@
+# Pika Sense + Piper 遥操会话配置。此文件只描述如何启动已有 ROS 遥操，
+# 与采集配置分离；修改遥操方式或替换机械臂时，新增本类配置而不要修改采集核心。
+
+# start_single_sensor_whit_teleop.bash 内含 sudo。先在当前终端验证凭据，
+# 避免后台子进程与“开始/结束采集”的人工确认竞争标准输入。
+pre_start_command: "sudo -v"
+
+calibration:
+  # 首次使用本机、增减基站或切换频道后执行 force；命令可能交互式运行。
+  force_command: >-
+    cd ~/pika_ros/install/pika_locator/lib && ./survive-cli --force-calibrate
+  # 定位漂移或基站在使用中被移动时执行 diagnose；不会替代需要 force 的场景。
+  diagnose_command: >-
+    cd ~/pika_ros/install/pika_locator/lib && ./survive-cli
+
+sensor:
+  name: pika_sense
+  # 保持现有传感器启动脚本不变。子进程输出会写入每条会话的 teleop_logs/ 目录。
+  command: >-
+    source ~/pika_ros/install/setup.bash &&
+    cd ~/pika_ros/scripts &&
+    exec bash start_single_sensor_whit_teleop.bash
+  # 仅用于发现“命令立即退出”；不能证明定位或遥操链路已准备完成。
+  startup_wait_s: 3.0
+
+controller:
+  name: piper_controller
+  # conda 在非交互 bash 中不一定已初始化，故显式加载 conda.sh；不修改 ROS launch 文件。
+  command: >-
+    source ~/pika_ros/install/setup.bash &&
+    source ~/miniconda3/etc/profile.d/conda.sh &&
+    conda activate pika &&
+    exec ros2 launch pika_remote_agx_arm teleop_single_piper.launch.py
+  startup_wait_s: 5.0
