@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from taiyi_piper_collect.config import load_config
-from taiyi_piper_collect.errors import ConfigurationError
 
 
 def test_mock_config_can_be_loaded() -> None:
@@ -22,12 +19,12 @@ def test_fully_annotated_real_example_can_be_loaded() -> None:
     config = load_config(config_path)
 
     assert config.robot.driver == "piper"
-    assert config.session.pose_representation == "xyz_xyzw"
+    assert config.session.pose_representation == "xyz_rxryrz"
     assert config.modalities.gripper_position
     assert config.gripper.driver == "piper"
 
 
-def test_piper_rejects_euler_pose_schema(tmp_path: Path) -> None:
+def test_piper_accepts_native_euler_pose_schema(tmp_path: Path) -> None:
     config_path = tmp_path / "invalid.yaml"
     config_path.write_text(
         """
@@ -57,5 +54,4 @@ robot:
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigurationError, match="xyz_xyzw"):
-        load_config(config_path)
+    assert load_config(config_path).session.pose_representation == "xyz_rxryrz"

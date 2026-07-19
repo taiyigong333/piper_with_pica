@@ -23,6 +23,24 @@ def test_tool_offset_follows_end_effector_orientation() -> None:
     assert np.allclose(rotated, [0.0, 1.0, 0.0], atol=1e-12)
 
 
+def test_piper_native_tcp_uses_xyz_rxryrz_in_radians() -> None:
+    robot = PiperRobot(RobotConfig(name="piper", driver="piper", can_name="can0"), "xyz_rxryrz")
+    robot._interface = SimpleNamespace(
+        GetArmJointMsgs=lambda: SimpleNamespace(
+            joint_state=SimpleNamespace(joint_1=0, joint_2=0, joint_3=0, joint_4=0, joint_5=0, joint_6=0)
+        ),
+        GetArmEndPoseMsgs=lambda: SimpleNamespace(
+            end_pose=SimpleNamespace(X_axis=350_000, Y_axis=-100_000, Z_axis=250_000, RX_axis=180_000, RY_axis=-90_000, RZ_axis=45_000)
+        ),
+    )
+
+    state = robot.read()
+
+    assert state.tcp_pose is not None
+    assert state.tcp_pose.shape == (6,)
+    assert np.allclose(state.tcp_pose, [0.35, -0.1, 0.25, math.pi, -math.pi / 2, math.pi / 4])
+
+
 def test_piper_gripper_reads_sdk_stroke_in_meters() -> None:
     robot = PiperRobot(RobotConfig(name="piper", driver="piper", can_name="can0"), "xyz_xyzw")
     robot._interface = SimpleNamespace(

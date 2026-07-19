@@ -266,8 +266,6 @@ def load_config(path: str | Path) -> CollectConfig:
             raise ConfigurationError("Piper 需要配置 robot.can_name。")
         if robot.dh_is_offset not in {0, 1}:
             raise ConfigurationError("robot.dh_is_offset 只支持 0 或 1。")
-        if session.pose_representation != "xyz_xyzw":
-            raise ConfigurationError("Piper 原生返回欧拉角；为避免语义错误，必须使用 xyz_xyzw。")
 
     gripper_raw = _mapping(raw.get("gripper", {}), "gripper")
     gripper = GripperConfig(enabled=bool(gripper_raw.get("enabled", False)), driver=str(gripper_raw.get("driver", "none")))

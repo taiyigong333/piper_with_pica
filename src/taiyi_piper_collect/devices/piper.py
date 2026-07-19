@@ -63,9 +63,10 @@ class PiperRobot(RobotDevice):
     """通过 `piper_sdk` 读取 CAN 反馈，严格不下发运动或初始化查询指令。"""
 
     def __init__(self, config: RobotConfig, pose_representation: str) -> None:
-        if pose_representation != "xyz_xyzw":
-            raise DeviceError("Piper 仅支持标准化输出 xyz_xyzw。")
+        if pose_representation not in {"xyz_xyzw", "xyz_rxryrz"}:
+            raise DeviceError("Piper 仅支持 xyz_xyzw 或 xyz_rxryrz。")
         self._config = config
+        self._pose_representation = pose_representation
         self._interface: Any | None = None
 
     def start(self) -> None:
@@ -99,7 +100,9 @@ class PiperRobot(RobotDevice):
             euler_rad = np.asarray([end_pose.RX_axis, end_pose.RY_axis, end_pose.RZ_axis], dtype=np.float64) * (math.pi / 180000.0)
             quaternion = np.asarray(euler_xyz_to_xyzw(euler_rad), dtype=np.float64)
             position_m += rotate_vector_xyzw(quaternion, np.asarray(self._config.tool_offset_m, dtype=np.float64))
-            tcp_pose = np.concatenate((position_m, quaternion))
+            # 工具偏移需要旋转矩阵，但落盘表示必须遵守现场配置。
+            orientation = euler_rad if self._pose_representation == "xyz_rxryrz" else quaternion
+            tcp_pose = np.concatenate((position_m, orientation))
             if not np.isfinite(joints_rad).all() or not np.isfinite(tcp_pose).all():
                 raise DeviceError("Piper 返回 NaN 或 Inf。")
             return RobotState(timestamp=time.time(), joint_positions=joints_rad, tcp_pose=tcp_pose)

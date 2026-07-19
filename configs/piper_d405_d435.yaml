@@ -6,8 +6,8 @@ session:
   collector_hash: "待填写：采集员哈希 ID"
   format_version: "1.0.0"
   duration_s: 60
-  # Piper 原生姿态是欧拉角；适配器转换为 xyzw 四元数，避免将欧拉角伪称为旋转向量。
-  pose_representation: xyz_xyzw
+  # Piper TCP 原生格式为 [x, y, z, rx, ry, rz]，位置单位 m、欧拉角单位 rad。
+  pose_representation: xyz_rxryrz
   hdf5:
     queue_size: 256
     batch_size: 16

@@ -37,7 +37,7 @@ class RobotState:
 
     timestamp: float
     joint_positions: np.ndarray | None = None
-    tcp_pose: np.ndarray | None = None
+    tcp_pose: np.ndarray | None = None  # 由 session.pose_representation 定义：m+xyzw 或 m+rxryrz(rad)。
     gripper_position: np.ndarray | None = None  # 夹爪开闭行程，单位 m。
     is_intervene: bool = False
 

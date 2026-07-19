@@ -13,10 +13,11 @@ from taiyi_piper_collect.preflight import preflight
 from taiyi_piper_collect.quality import validate_hdf5
 
 
-def _mock_config(tmp_path: Path) -> Path:
+def _mock_config(tmp_path: Path, pose_representation: str = "xyz_xyzw") -> Path:
     source = Path(__file__).parents[1] / "configs" / "mock_piper.yaml"
     raw = yaml.safe_load(source.read_text(encoding="utf-8"))
     raw["session"]["output_root"] = str(tmp_path / "records")
+    raw["session"]["pose_representation"] = pose_representation
     config_path = tmp_path / "mock.yaml"
     config_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return config_path
@@ -70,3 +71,14 @@ def test_collection_can_finish_after_external_manual_stop(tmp_path: Path) -> Non
     result = result_box["result"]
     assert result.trajectory_path.exists()
     assert validate_hdf5(result.trajectory_path, config)["result"] == "pass"
+
+
+def test_mock_collection_supports_xyz_rxryrz_tcp(tmp_path: Path) -> None:
+    config = load_config(_mock_config(tmp_path, "xyz_rxryrz"))
+
+    result = DataCollector(config).run(duration_s=0.3)
+
+    assert validate_hdf5(result.trajectory_path, config)["result"] == "pass"
+    with h5py.File(result.trajectory_path, "r") as file:
+        assert file["metadata/pose_representation"].asstr()[()] == "xyz_rxryrz"
+        assert file["puppet/end_effector_single_pose_align/data"].shape[1] == 6

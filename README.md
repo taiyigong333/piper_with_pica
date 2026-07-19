@@ -2,7 +2,7 @@
 
 本工程面向当前 Piper 单臂、RealSense D405（腕部）与 D435（前方）采集，同时以设备接口和 YAML 配置隔离硬件细节，便于后续接入其他机械臂、相机和可选模态。
 
-当前采集的核心观测为：Piper 6 关节角（`rad`）、TCP 位姿（`m + xyzw`）、多个相机的 RGB 和 Piper 夹爪开闭行程（`m`）；深度采集由配置开关控制。数据按《数据采集与留存规范》写入 HDF5，并同时生成 `quality.json`、`manifest.json` 与 `checksums.sha256`。
+当前采集的核心观测为：Piper 6 关节角（`rad`）、TCP 位姿（默认 `m + rxryrz`，欧拉角为 `rad`）、多个相机的 RGB 和 Piper 夹爪开闭行程（`m`）；深度采集由配置开关控制。数据按《数据采集与留存规范》写入 HDF5，并同时生成 `quality.json`、`manifest.json` 与 `checksums.sha256`。
 
 ## 环境与安装
 
@@ -92,6 +92,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect teleop-session \
 ## 配置与扩展
 
 - `modalities` 控制 RGB、深度、关节、TCP、夹爪位置是否采集与落盘。
+- `session.pose_representation` 控制 TCP 落盘格式。Piper 现场配置使用原生 `xyz_rxryrz`（`m + rad`）；`xyz_xyzw` 仅保留给已有数据和其他设备的兼容场景。
 - `acquisition.robot_hz` 和 `acquisition.camera_rig_hz` 分别控制原始状态采样及相机对齐时间轴。
 - `cameras` 是可扩展列表；每台相机都通过 `driver` 注册到设备工厂。
 - `robot.driver` 目前支持 `piper` 和 `mock`。接入新机械臂时实现 `RobotDevice`，并保证向核心层提供标准单位的 `RobotState`。
