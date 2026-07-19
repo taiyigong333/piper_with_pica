@@ -161,10 +161,14 @@ class ExternalTeleop:
         try:
             process = subprocess.Popen(
                 ["bash", "-lc", command.command],
-                stdin=subprocess.DEVNULL,
+                # 外部 Pika 脚本包含 sudo。保留启动终端可复用 sudo -v 的 tty 凭据；
+                # 标准输出仍写日志，正常 ROS 节点不会读取终端输入。
+                stdin=None,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                # 只创建新进程组而不创建新会话：既可 killpg 回收 ROS 子进程，又不会
+                # 丢失 sudo 所需的控制终端。
+                preexec_fn=os.setpgrp,
                 env=_ros_child_environment(),
             )
         except BaseException:

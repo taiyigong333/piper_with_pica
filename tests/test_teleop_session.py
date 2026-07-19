@@ -48,8 +48,9 @@ def test_external_teleop_starts_in_order_and_stops_process_groups(tmp_path: Path
 
     def fake_popen(args, **kwargs):
         assert args[:2] == ["bash", "-lc"]
-        assert kwargs["stdin"] is teleop_session.subprocess.DEVNULL
-        assert kwargs["start_new_session"] is True
+        assert kwargs["stdin"] is None
+        assert kwargs["preexec_fn"] is teleop_session.os.setpgrp
+        assert "start_new_session" not in kwargs
         commands.append(args[2])
         process = FakeProcess(pid=100 + len(started))
         started.append(process)

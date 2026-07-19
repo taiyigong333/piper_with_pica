@@ -1,8 +1,8 @@
 # Pika Sense + Piper 遥操会话配置。此文件只描述如何启动已有 ROS 遥操，
 # 与采集配置分离；修改遥操方式或替换机械臂时，新增本类配置而不要修改采集核心。
 
-# start_single_sensor_whit_teleop.bash 内含 sudo。先在当前终端验证凭据，
-# 避免后台子进程与“开始/结束采集”的人工确认竞争标准输入。
+# start_single_sensor_whit_teleop.bash 内含 sudo。会话先在当前终端验证凭据，
+# 后台传感器进程复用该终端的 sudo 凭据；其输出仍写入日志，不会占用正常空格确认。
 pre_start_command: "sudo -v"
 
 calibration:
