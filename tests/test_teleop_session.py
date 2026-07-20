@@ -115,8 +115,8 @@ def test_controller_log_requires_rviz_and_core_nodes_to_stay_alive(tmp_path: Pat
 def test_repeat_session_restarts_independent_trajectory(monkeypatch) -> None:
     reports = iter(
         [
-            {"result": "pass", "trajectory_id": "first"},
-            {"result": "pass", "trajectory_id": "second"},
+            {"result": "pass", "trajectory_id": "first", "action": "save"},
+            {"result": "pass", "trajectory_id": "second", "action": "save"},
         ]
     )
     calibration_reminders: list[bool] = []
@@ -137,6 +137,36 @@ def test_repeat_session_restarts_independent_trajectory(monkeypatch) -> None:
     assert calibration_reminders == [True, False]
     assert report["trajectory_count"] == 2
     assert [item["trajectory_id"] for item in report["sessions"]] == ["first", "second"]
+
+
+def test_completion_action_allows_single_key_deletion(tmp_path: Path) -> None:
+    output_root = tmp_path / "records"
+    trajectory_path = output_root / "real" / "20260720" / "discard" / "trajectory.hdf5"
+    trajectory_path.parent.mkdir(parents=True)
+    trajectory_path.write_bytes(b"not-a-real-hdf5")
+    config = load_config(Path(__file__).parents[1] / "configs" / "mock_piper.yaml")
+    config = replace(config, session=replace(config.session, output_root=output_root))
+    result = teleop_session.CollectionResult(
+        trajectory_id="discard",
+        trajectory_path=trajectory_path,
+        quality_path=trajectory_path.with_name("quality.json"),
+        manifest_path=trajectory_path.with_name("manifest.json"),
+        stats=CollectionStats(),
+        writer_report=WriterReport(trajectory_path, 1, 1, 1),
+    )
+    messages: list[str] = []
+
+    action = teleop_session._completion_action(
+        result,
+        config,
+        None,
+        input_fn=lambda _: "d",
+        output_fn=messages.append,
+    )
+
+    assert action == "delete"
+    assert not trajectory_path.parent.exists()
+    assert "按 d 删除" in messages[0]
 
 
 def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path, monkeypatch) -> None:
@@ -188,7 +218,7 @@ def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path
     monkeypatch.setattr(teleop_session, "ExternalTeleop", FakeTeleop)
     monkeypatch.setattr(teleop_session, "DataCollector", FakeCollector)
     monkeypatch.setattr(teleop_session, "load_teleop_config", lambda _: object())
-    answers = iter([" ", " ", " ", " ", " "])
+    answers = iter([" ", " ", " ", " ", " ", " "])
 
     report = teleop_session.run_session(
         "collect.yaml",

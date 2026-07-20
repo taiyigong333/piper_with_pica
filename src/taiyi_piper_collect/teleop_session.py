@@ -411,11 +411,60 @@ def _completion_action(
     result: CollectionResult,
     config: CollectConfig,
     preset: str | None,
+    *,
+    input_fn: Callable[[str], str],
+    output_fn: Callable[[str], None],
 ) -> str:
-    action = preset or "save"
+    """在完整轨迹写盘后决定保留或删除；预设用于非交互批量任务。"""
+
+    action = preset or _wait_for_completion_action(input_fn=input_fn, output_fn=output_fn)
     if action == "delete":
         _delete_result(result, config)
     return action
+
+
+def _wait_for_completion_action(
+    *,
+    input_fn: Callable[[str], str],
+    output_fn: Callable[[str], None],
+) -> str:
+    """以单键选择处理完整轨迹，避免用 yes/no 造成现场输入歧义。"""
+
+    output_fn("本条轨迹已写盘。按空格保留；按 d 删除；按 q 保留。")
+    if input_fn is not input:
+        try:
+            key = input_fn("")
+        except EOFError as error:
+            raise CollectionError("未收到轨迹处理选择，已保留本条轨迹。") from error
+        if key == " ":
+            return "save"
+        if key.lower() == "d":
+            return "delete"
+        if key.lower() == "q":
+            return "save"
+        raise CollectionError("仅支持空格保留、d 删除或 q 保留。")
+    if not sys.stdin.isatty():
+        raise CollectionError("未指定 --on-complete 时，需要交互式终端选择保留或删除。")
+
+    file_descriptor = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(file_descriptor)
+    try:
+        tty.setraw(file_descriptor)
+        while True:
+            key = sys.stdin.read(1)
+            if key == " ":
+                output_fn("")
+                return "save"
+            if key.lower() == "d":
+                output_fn("")
+                return "delete"
+            if key.lower() == "q":
+                output_fn("")
+                return "save"
+            if key == "\x03":
+                raise KeyboardInterrupt
+    finally:
+        termios.tcsetattr(file_descriptor, termios.TCSADRAIN, old_settings)
 
 
 def _teleop_health_or_raise(teleop: ExternalTeleop) -> None:
@@ -552,7 +601,7 @@ def run_session(
     result = result_box.get("result")
     if result is None:
         raise CollectionError("采集未返回结果。")
-    action = _completion_action(result, config, on_complete)
+    action = _completion_action(result, config, on_complete, input_fn=input_fn, output_fn=output_fn)
     return {
         "result": "pass",
         "action": action,
@@ -592,8 +641,14 @@ def run_sessions(
         )
         if not repeat:
             return reports[0]
+        action = reports[-1]["action"]
+        completion_message = (
+            "本条轨迹已删除。准备下一条独立轨迹时，"
+            if action == "delete"
+            else "本条轨迹已保留。准备下一条独立轨迹时，"
+        )
         if not _wait_for_space(
-            "本条数据已保存。准备下一条独立轨迹时，",
+            completion_message,
             input_fn=input_fn,
             output_fn=output_fn,
             allow_quit=True,
@@ -613,8 +668,8 @@ def _parser() -> Any:
     session.add_argument("--config", required=True, help="采集 YAML 配置路径")
     session.add_argument("--teleop-config", required=True, help="遥操 YAML 配置路径")
     session.add_argument("--duration", type=float, help="可选采集上限（秒）；未设时由结束遥操确认收尾")
-    session.add_argument("--on-complete", choices=("save", "delete"), help="完成后保存（默认）或删除轨迹")
-    session.add_argument("--repeat", action="store_true", help="本条保存后按空格开始下一条独立轨迹")
+    session.add_argument("--on-complete", choices=("save", "delete"), help="完成后直接保留或删除；未设时单键选择")
+    session.add_argument("--repeat", action="store_true", help="本条处理后按空格开始下一条独立轨迹")
     return parser
 
 
