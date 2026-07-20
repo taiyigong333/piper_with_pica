@@ -20,6 +20,11 @@ def test_teleop_example_can_be_loaded() -> None:
     assert "pub_delta_pose.py" in config.controller.required_log_patterns
     assert "process has died" not in config.controller.failure_log_patterns
     assert config.controller.failure_log_regexes
+    assert config.sensor.shutdown_signal_scope == "process_group"
+    assert config.controller.shutdown_signal_scope == "parent"
+    assert config.shutdown.sigint_timeout_s > 0
+    assert config.shutdown.sigterm_timeout_s > 0
+    assert config.shutdown.sigkill_timeout_s > 0
 
 
 def test_ros_child_environment_removes_uv_python_environment(monkeypatch) -> None:
@@ -51,6 +56,7 @@ def test_external_teleop_starts_in_order_and_stops_process_groups(tmp_path: Path
     started: list[FakeProcess] = []
     commands: list[str] = []
     killed: list[tuple[int, signal.Signals]] = []
+    parent_signals: list[tuple[int, signal.Signals]] = []
 
     def fake_popen(args, **kwargs):
         assert args[:2] == ["bash", "-lc"]
@@ -71,18 +77,27 @@ def test_external_teleop_starts_in_order_and_stops_process_groups(tmp_path: Path
         killed.append((pid, sig))
         process.return_code = 0
 
+    def fake_kill(pid: int, sig: signal.Signals) -> None:
+        process = next(process for process in started if process.pid == pid)
+        parent_signals.append((pid, sig))
+        process.return_code = 0
+
     monkeypatch.setattr(teleop_session.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(teleop_session.os, "kill", fake_kill)
     monkeypatch.setattr(teleop_session.os, "killpg", fake_killpg)
     monkeypatch.setattr(teleop_session.time, "sleep", lambda _: None)
 
     external = teleop_session.ExternalTeleop(config)
     external.start(tmp_path / "logs")
-    external.stop()
+    report = external.stop()
 
     assert len(started) == 2
     assert "start_single_sensor_whit_teleop.bash" in commands[0]
     assert "teleop_single_piper.launch.py" in commands[1]
-    assert killed == [(101, signal.SIGINT), (100, signal.SIGINT)]
+    assert parent_signals == [(101, signal.SIGINT)]
+    assert killed == [(100, signal.SIGINT)]
+    assert report["stages"][0]["signal"] == "SIGINT"
+    assert report["stages"][0]["remaining"] == []
     assert (tmp_path / "logs" / "pika_sense.log").exists()
     assert (tmp_path / "logs" / "piper_controller.log").exists()
 
@@ -191,8 +206,9 @@ def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path
         def health_errors(self) -> dict[str, str]:
             return {}
 
-        def stop(self) -> None:
+        def stop(self) -> dict[str, object]:
             events.append("teleop-stop")
+            return {"stages": [], "remaining": []}
 
     class FakeCollector:
         def __init__(self, _config) -> None:

@@ -13,8 +13,16 @@ calibration:
   diagnose_command: >-
     cd ~/pika_ros/install/pika_locator/lib && ./survive-cli
 
+# 仅由本项目编排层使用，不修改 pika_ros。controller 已 exec 到 ros2 launch，
+# 首轮只中断 launch 父进程；sensor 脚本会保留子 ros2 launch，首轮保持进程组中断。
+shutdown:
+  sigint_timeout_s: 1.0 # 可按现场收尾速度调整；三个超时都必须为正数。
+  sigterm_timeout_s: 1.0
+  sigkill_timeout_s: 1.0
+
 sensor:
   name: pika_sense
+  shutdown_signal_scope: process_group
   # 保持现有传感器启动脚本不变。子进程输出会写入每条会话的 teleop_logs/ 目录。
   command: >-
     source ~/pika_ros/install/setup.bash &&
@@ -31,6 +39,7 @@ sensor:
 
 controller:
   name: piper_controller
+  shutdown_signal_scope: parent
   # conda 在非交互 bash 中不一定已初始化，故显式加载 conda.sh；不修改 ROS launch 文件。
   command: >-
     source ~/pika_ros/install/setup.bash &&

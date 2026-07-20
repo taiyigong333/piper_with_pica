@@ -42,6 +42,16 @@ class TeleopCommand:
     required_log_patterns: tuple[str, ...] = ()
     failure_log_patterns: tuple[str, ...] = ()
     failure_log_regexes: tuple[str, ...] = ()
+    shutdown_signal_scope: str = "process_group"
+
+
+@dataclass(frozen=True)
+class TeleopShutdownConfig:
+    """本项目对已有 ROS launch 的外部收尾策略。"""
+
+    sigint_timeout_s: float = 6.0
+    sigterm_timeout_s: float = 2.0
+    sigkill_timeout_s: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,7 @@ class TeleopConfig:
     diagnose_calibration_command: str
     sensor: TeleopCommand
     controller: TeleopCommand
+    shutdown: TeleopShutdownConfig
 
 
 @dataclass
@@ -76,7 +87,7 @@ def _required(mapping: dict[str, Any], key: str, path: str) -> Any:
     return mapping[key]
 
 
-def _command(value: Any, path: str, default_name: str) -> TeleopCommand:
+def _command(value: Any, path: str, default_name: str, default_shutdown_signal_scope: str) -> TeleopCommand:
     raw = _mapping(value, path)
     command = str(_required(raw, "command", path)).strip()
     if not command:
@@ -87,6 +98,9 @@ def _command(value: Any, path: str, default_name: str) -> TeleopCommand:
         raise ConfigurationError(f"{path}.startup_wait_s 必须为非负数。") from error
     if startup_wait_s < 0:
         raise ConfigurationError(f"{path}.startup_wait_s 必须为非负数。")
+    shutdown_signal_scope = str(raw.get("shutdown_signal_scope", default_shutdown_signal_scope)).strip()
+    if shutdown_signal_scope not in {"parent", "process_group"}:
+        raise ConfigurationError(f"{path}.shutdown_signal_scope 只支持 parent 或 process_group。")
     return TeleopCommand(
         name=str(raw.get("name", default_name)),
         command=command,
@@ -94,6 +108,7 @@ def _command(value: Any, path: str, default_name: str) -> TeleopCommand:
         required_log_patterns=_log_patterns(raw.get("required_log_patterns", []), f"{path}.required_log_patterns"),
         failure_log_patterns=_log_patterns(raw.get("failure_log_patterns", []), f"{path}.failure_log_patterns"),
         failure_log_regexes=_log_regexes(raw.get("failure_log_regexes", []), f"{path}.failure_log_regexes"),
+        shutdown_signal_scope=shutdown_signal_scope,
     )
 
 
@@ -111,6 +126,25 @@ def _log_regexes(value: Any, path: str) -> tuple[str, ...]:
         except re.error as error:
             raise ConfigurationError(f"{path} 包含无效正则表达式 {pattern!r}：{error}") from error
     return patterns
+
+
+def _shutdown_config(value: Any) -> TeleopShutdownConfig:
+    raw = _mapping(value, "shutdown") if value is not None else {}
+
+    def timeout(name: str, default: float) -> float:
+        try:
+            parsed = float(raw.get(name, default))
+        except (TypeError, ValueError) as error:
+            raise ConfigurationError(f"shutdown.{name} 必须为正数。") from error
+        if parsed <= 0:
+            raise ConfigurationError(f"shutdown.{name} 必须为正数。")
+        return parsed
+
+    return TeleopShutdownConfig(
+        sigint_timeout_s=timeout("sigint_timeout_s", 6.0),
+        sigterm_timeout_s=timeout("sigterm_timeout_s", 2.0),
+        sigkill_timeout_s=timeout("sigkill_timeout_s", 1.0),
+    )
 
 
 def load_teleop_config(path: str | Path) -> TeleopConfig:
@@ -136,8 +170,13 @@ def load_teleop_config(path: str | Path) -> TeleopConfig:
         pre_start_command=str(pre_start).strip() if pre_start is not None else None,
         force_calibration_command=force_command,
         diagnose_calibration_command=diagnose_command,
-        sensor=_command(_required(raw, "sensor", "遥操根配置"), "sensor", "pika-sense"),
-        controller=_command(_required(raw, "controller", "遥操根配置"), "controller", "piper-controller"),
+        sensor=_command(
+            _required(raw, "sensor", "遥操根配置"), "sensor", "pika-sense", "process_group"
+        ),
+        controller=_command(
+            _required(raw, "controller", "遥操根配置"), "controller", "piper-controller", "parent"
+        ),
+        shutdown=_shutdown_config(raw.get("shutdown")),
     )
 
 
@@ -220,42 +259,59 @@ class ExternalTeleop:
                 errors[managed.command.name] = failure
         return errors
 
-    def stop(self, timeout_s: float = 8.0) -> None:
-        """并行关闭 ROS 进程组，避免控制器和传感器收尾时间串行叠加。"""
+    def stop(self) -> dict[str, Any]:
+        """按命令类型收尾 ROS，并返回各阶段的耗时和残留进程。"""
 
         managed_processes = list(reversed(self._processes))
         try:
-            self._stop_process_groups([managed.process for managed in managed_processes], timeout_s)
+            report = self._stop_processes(managed_processes)
         finally:
             for managed in managed_processes:
                 managed.log_file.close()
         self._processes.clear()
+        return report
 
-    @staticmethod
-    def _stop_process_groups(processes: list[Any], timeout_s: float) -> None:
-        """每一轮同时发信号，再共同等待全部独立 ROS 进程组退出。"""
+    def _stop_processes(self, managed_processes: list[_ManagedProcess]) -> dict[str, Any]:
+        """首轮避免重复中断 launch 子节点，超时后才按进程组强制回收。"""
 
-        active = [process for process in processes if ExternalTeleop._process_group_alive(process.pid)]
+        shutdown = self.config.shutdown
+        active = [managed for managed in managed_processes if self._process_group_alive(managed.process.pid)]
+        stages: list[dict[str, Any]] = []
         for signal_value, wait_s in (
-            (signal.SIGINT, timeout_s),
-            (signal.SIGTERM, 3.0),
-            (signal.SIGKILL, 2.0),
+            (signal.SIGINT, shutdown.sigint_timeout_s),
+            (signal.SIGTERM, shutdown.sigterm_timeout_s),
+            (signal.SIGKILL, shutdown.sigkill_timeout_s),
         ):
             if not active:
                 break
-            for process in active:
+            stage_started = time.monotonic()
+            for managed in active:
                 try:
-                    os.killpg(process.pid, signal_value)
+                    if signal_value == signal.SIGINT and managed.command.shutdown_signal_scope == "parent":
+                        # controller.command 以 exec ros2 launch 结束。只中断 launch 父进程，
+                        # 由 ROS 正常向子节点传播 SIGINT，避免叶子节点收到两次中断。
+                        os.kill(managed.process.pid, signal_value)
+                    else:
+                        os.killpg(managed.process.pid, signal_value)
                 except ProcessLookupError:
                     pass
-            active = ExternalTeleop._wait_for_process_groups_exit(active, wait_s)
-        for process in active:
+            active = self._wait_for_process_groups_exit(active, wait_s)
+            stages.append(
+                {
+                    "signal": signal_value.name,
+                    "waited_s": round(time.monotonic() - stage_started, 3),
+                    "remaining": [managed.command.name for managed in active],
+                }
+            )
+        for managed in active:
+            process = managed.process
             if process.poll() is not None:
                 continue
             try:
                 process.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 pass
+        return {"stages": stages, "remaining": [managed.command.name for managed in active]}
 
     @staticmethod
     def _process_group_alive(process_group: int) -> bool:
@@ -268,14 +324,24 @@ class ExternalTeleop:
         return True
 
     @staticmethod
-    def _wait_for_process_groups_exit(processes: list[Any], timeout_s: float) -> list[Any]:
+    def _wait_for_process_groups_exit(
+        managed_processes: list[_ManagedProcess], timeout_s: float
+    ) -> list[_ManagedProcess]:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            active = [process for process in processes if ExternalTeleop._process_group_alive(process.pid)]
+            active = [
+                managed
+                for managed in managed_processes
+                if ExternalTeleop._process_group_alive(managed.process.pid)
+            ]
             if not active:
                 return []
             time.sleep(0.05)
-        return [process for process in processes if ExternalTeleop._process_group_alive(process.pid)]
+        return [
+            managed
+            for managed in managed_processes
+            if ExternalTeleop._process_group_alive(managed.process.pid)
+        ]
 
     def _raise_for_log_health(self, managed: _ManagedProcess) -> None:
         failure = self._log_failure(managed)
@@ -595,8 +661,13 @@ def run_session(
         stop_request.set()
         if collector_thread is not None and collector_thread.is_alive():
             collector_thread.join(timeout=30.0)
-        output_fn("正在并行关闭 Pika ROS 进程，请等待。")
-        teleop.stop()
+        output_fn("正在关闭 Pika ROS 进程，请等待。")
+        shutdown_report = teleop.stop()
+        stage_summary = "; ".join(
+            f"{stage['signal']} 等待 {stage['waited_s']:.1f}s，剩余 {','.join(stage['remaining']) or '无'}"
+            for stage in shutdown_report["stages"]
+        )
+        output_fn(f"Pika ROS 关闭结果：{stage_summary or '无需关闭进程'}。")
 
     result = result_box.get("result")
     if result is None:
