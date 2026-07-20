@@ -32,8 +32,8 @@ cameras:
     driver: realsense
     model: RealSense_D435
     serial_number: "254522072098"
-    width: 640
-    height: 480
+    width: 1280
+    height: 720
     depth_width: 640
     depth_height: 480
     fps: 30
@@ -46,8 +46,8 @@ cameras:
     driver: realsense
     model: RealSense_D405
     serial_number: "419122270341"
-    width: 640
-    height: 480
+    width: 1280
+    height: 720
     depth_width: 640
     depth_height: 480
     fps: 30
