@@ -13,6 +13,7 @@ from .errors import CollectionError, ConfigurationError, DeviceError, HardwareDe
 from .preflight import discover_realsense, preflight
 from .piper_state import read_piper_state
 from .quality import validate_hdf5
+from .teleop_processes import teleop_process_report, terminate_teleop_processes
 from .teleop_session import load_teleop_config, run_calibration, run_sessions
 
 
@@ -41,6 +42,9 @@ def _parser() -> argparse.ArgumentParser:
     teleop_session.add_argument("--duration", type=float, help="可选采集上限（秒）；未设时由结束遥操确认收尾")
     teleop_session.add_argument("--on-complete", choices=("save", "delete"), help="完成后保存（默认）或删除轨迹")
     teleop_session.add_argument("--repeat", action="store_true", help="本条保存后按空格开始下一条独立轨迹")
+    teleop_status = subparsers.add_parser("teleop-status", help="列出当前用户残留的 Pika 遥操进程")
+    teleop_stop = subparsers.add_parser("teleop-stop", help="显式终止残留的 Pika 遥操进程")
+    teleop_stop.add_argument("--terminate", action="store_true", help="执行终止；未提供时仅输出进程列表")
     return parser
 
 
@@ -78,6 +82,13 @@ def main(argv: list[str] | None = None) -> int:
             run_calibration(load_teleop_config(args.teleop_config), args.mode)
             print(json.dumps({"result": "pass", "mode": args.mode}, ensure_ascii=False))
             return 0
+        if args.command == "teleop-status":
+            print(json.dumps(teleop_process_report(), ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "teleop-stop":
+            report = terminate_teleop_processes() if args.terminate else teleop_process_report()
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("result", "pass") == "pass" else 1
         if args.command == "teleop-session":
             report = run_sessions(
                 args.config,

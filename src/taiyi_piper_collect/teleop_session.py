@@ -11,6 +11,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shutil
 import signal
@@ -39,6 +40,7 @@ class TeleopCommand:
     startup_wait_s: float = 3.0
     required_log_patterns: tuple[str, ...] = ()
     failure_log_patterns: tuple[str, ...] = ()
+    failure_log_regexes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,7 @@ def _command(value: Any, path: str, default_name: str) -> TeleopCommand:
         startup_wait_s=startup_wait_s,
         required_log_patterns=_log_patterns(raw.get("required_log_patterns", []), f"{path}.required_log_patterns"),
         failure_log_patterns=_log_patterns(raw.get("failure_log_patterns", []), f"{path}.failure_log_patterns"),
+        failure_log_regexes=_log_regexes(raw.get("failure_log_regexes", []), f"{path}.failure_log_regexes"),
     )
 
 
@@ -97,6 +100,16 @@ def _log_patterns(value: Any, path: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
         raise ConfigurationError(f"{path} 必须是非空字符串列表。")
     return tuple(item.strip() for item in value)
+
+
+def _log_regexes(value: Any, path: str) -> tuple[str, ...]:
+    patterns = _log_patterns(value, path)
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise ConfigurationError(f"{path} 包含无效正则表达式 {pattern!r}：{error}") from error
+    return patterns
 
 
 def load_teleop_config(path: str | Path) -> TeleopConfig:
@@ -207,23 +220,57 @@ class ExternalTeleop:
         return errors
 
     def stop(self, timeout_s: float = 8.0) -> None:
-        """从后向前关闭进程组，确保 ros2 launch 派生的节点一并退出。"""
+        """从后向前优雅关闭 ROS 进程组，并在必要时逐级强制回收。"""
 
         for managed in reversed(self._processes):
             process = managed.process
             try:
-                if process.poll() is None:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=timeout_s)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.wait(timeout=2.0)
+                self._stop_process_group(process, timeout_s)
             except ProcessLookupError:
                 pass
             finally:
                 managed.log_file.close()
         self._processes.clear()
+
+    @staticmethod
+    def _stop_process_group(process: Any, timeout_s: float) -> None:
+        """以 ROS launch 能识别的 SIGINT 优先关闭整个独立进程组。"""
+
+        process_group = process.pid
+        for signal_value, wait_s in (
+            (signal.SIGINT, timeout_s),
+            (signal.SIGTERM, 3.0),
+            (signal.SIGKILL, 2.0),
+        ):
+            if not ExternalTeleop._process_group_alive(process_group):
+                break
+            os.killpg(process_group, signal_value)
+            if ExternalTeleop._wait_for_process_group_exit(process_group, wait_s):
+                break
+        if process.poll() is None:
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
+
+    @staticmethod
+    def _process_group_alive(process_group: int) -> bool:
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @staticmethod
+    def _wait_for_process_group_exit(process_group: int, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if not ExternalTeleop._process_group_alive(process_group):
+                return True
+            time.sleep(0.05)
+        return not ExternalTeleop._process_group_alive(process_group)
 
     def _raise_for_log_health(self, managed: _ManagedProcess) -> None:
         failure = self._log_failure(managed)
@@ -241,7 +288,13 @@ class ExternalTeleop:
 
     def _log_failure(self, managed: _ManagedProcess) -> str | None:
         content = self._read_log(managed)
-        return next((pattern for pattern in managed.command.failure_log_patterns if pattern in content), None)
+        literal_failure = next((pattern for pattern in managed.command.failure_log_patterns if pattern in content), None)
+        if literal_failure is not None:
+            return literal_failure
+        regex_failure = next(
+            (pattern for pattern in managed.command.failure_log_regexes if re.search(pattern, content)), None
+        )
+        return f"正则 {regex_failure}" if regex_failure is not None else None
 
     @staticmethod
     def _read_log(managed: _ManagedProcess) -> str:
@@ -458,7 +511,7 @@ def run_session(
         collector_thread = threading.Thread(target=collect, name="teleop-data-collector", daemon=True)
         collector_thread.start()
         _wait_for_space(
-            "本条遥操内容完成后，先在实体设备侧停止遥操，再",
+            "本条遥操内容已完成；保持 Sense 遥操运行并按空格结束数据采集，",
             input_fn=input_fn,
             output_fn=output_fn,
             health_check=lambda: _collection_health_or_raise(teleop, error_box),
@@ -468,6 +521,12 @@ def run_session(
         if collector_thread.is_alive():
             raise CollectionError("采集器未在 30 秒内完成收尾。")
         _raise_collection_error(error_box)
+        _wait_for_space(
+            "数据采集和写盘已完成。现在双击 Sense 夹爪停止遥操后，",
+            input_fn=input_fn,
+            output_fn=output_fn,
+            health_check=lambda: _teleop_health_or_raise(teleop),
+        )
     finally:
         stop_request.set()
         if collector_thread is not None and collector_thread.is_alive():

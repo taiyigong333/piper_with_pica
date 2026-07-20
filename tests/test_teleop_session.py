@@ -18,6 +18,8 @@ def test_teleop_example_can_be_loaded() -> None:
     assert "survive-cli --force-calibrate" in config.force_calibration_command
     assert "teleop_single_piper.launch.py" in config.controller.command
     assert "pub_delta_pose.py" in config.controller.required_log_patterns
+    assert "process has died" not in config.controller.failure_log_patterns
+    assert config.controller.failure_log_regexes
 
 
 def test_ros_child_environment_removes_uv_python_environment(monkeypatch) -> None:
@@ -57,8 +59,13 @@ def test_external_teleop_starts_in_order_and_stops_process_groups(tmp_path: Path
         return process
 
     def fake_killpg(pid: int, sig: signal.Signals) -> None:
+        process = next(process for process in started if process.pid == pid)
+        if sig == 0:
+            if process.return_code is None:
+                return
+            raise ProcessLookupError
         killed.append((pid, sig))
-        next(process for process in started if process.pid == pid).return_code = 0
+        process.return_code = 0
 
     monkeypatch.setattr(teleop_session.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(teleop_session.os, "killpg", fake_killpg)
@@ -71,9 +78,32 @@ def test_external_teleop_starts_in_order_and_stops_process_groups(tmp_path: Path
     assert len(started) == 2
     assert "start_single_sensor_whit_teleop.bash" in commands[0]
     assert "teleop_single_piper.launch.py" in commands[1]
-    assert killed == [(101, signal.SIGTERM), (100, signal.SIGTERM)]
+    assert killed == [(101, signal.SIGINT), (100, signal.SIGINT)]
     assert (tmp_path / "logs" / "pika_sense.log").exists()
     assert (tmp_path / "logs" / "piper_controller.log").exists()
+
+
+def test_controller_log_ignores_rviz_exit_but_detects_core_node_exit(tmp_path: Path) -> None:
+    config_path = Path(__file__).parents[1] / "configs" / "pika_sense_piper.example.yaml"
+    config = teleop_session.load_teleop_config(config_path)
+    log_path = tmp_path / "piper_controller.log"
+    with log_path.open("w+", encoding="utf-8") as log_file:
+        managed = teleop_session._ManagedProcess(
+            command=config.controller,
+            process=FakeProcess(pid=100),
+            log_file=log_file,
+            log_path=log_path,
+        )
+        log_file.write("[ERROR] [rviz2-3]: process has died [pid 1, exit code -6].\n")
+        log_file.flush()
+        external = teleop_session.ExternalTeleop(config)
+        assert external._log_failure(managed) is None
+
+        log_file.write("[ERROR] [arm_ik_pose_node.py-5]: process has died [pid 2, exit code 1].\n")
+        log_file.flush()
+        failure = external._log_failure(managed)
+        assert failure is not None
+        assert "arm_ik_pose_node.py" in failure
 
 
 def test_repeat_session_restarts_independent_trajectory(monkeypatch) -> None:
@@ -135,6 +165,7 @@ def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path
         def run(self, *, stop_request, **_kwargs):
             events.append("collect-start")
             assert stop_request.wait(timeout=1.0)
+            events.append("collect-finished")
             trajectory_path = tmp_path / "records" / "synthetic" / "20260718" / "mock" / "trajectory.hdf5"
             return teleop_session.CollectionResult(
                 trajectory_id="mock",
@@ -150,7 +181,7 @@ def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path
     monkeypatch.setattr(teleop_session, "ExternalTeleop", FakeTeleop)
     monkeypatch.setattr(teleop_session, "DataCollector", FakeCollector)
     monkeypatch.setattr(teleop_session, "load_teleop_config", lambda _: object())
-    answers = iter([" ", " ", " ", " "])
+    answers = iter([" ", " ", " ", " ", " "])
 
     report = teleop_session.run_session(
         "collect.yaml",
@@ -161,6 +192,7 @@ def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path
 
     assert report["action"] == "save"
     assert events.index("teleop-start") < events.index("collect-start") < events.index("teleop-stop")
+    assert events.index("collect-finished") < events.index("teleop-stop")
 
 
 class FakeProcess:
