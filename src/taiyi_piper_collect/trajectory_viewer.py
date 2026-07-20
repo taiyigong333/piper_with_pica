@@ -325,7 +325,17 @@ input[type="range"] { width: 100%; accent-color: #0e7c86; }
 .numeric { margin: 0; line-height: 1.7; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
 .right-column { display: grid; gap: 16px; align-content: start; }
 .chart-wrap { padding: 12px 14px 14px; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 7px 14px; min-height: 20px; margin: 0 0 9px; color: #384b58; font-size: 12px; }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.legend-swatch { display: inline-block; width: 16px; height: 3px; flex: 0 0 16px; }
 canvas { display: block; width: 100%; height: 190px; background: #fbfcfd; border: 1px solid #d8e0e5; }
+.detail-workspace { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
+.detail-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px 14px 14px; }
+.detail-chart { min-width: 0; margin: 0; }
+.detail-chart figcaption { display: flex; align-items: center; gap: 6px; min-height: 24px; color: #384b58; font-size: 13px; font-weight: 700; }
+.detail-chart canvas { height: 230px; }
+.tcp-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px 14px 14px; }
+.tcp-detail-grid .detail-chart canvas { height: 270px; }
 .quality { padding: 12px 14px 14px; font-size: 14px; }
 .quality-state { font-weight: 700; margin-bottom: 10px; }
 .pass { color: #19723b; }
@@ -335,7 +345,7 @@ canvas { display: block; width: 100%; height: 190px; background: #fbfcfd; border
 .quality li { margin: 5px 0; }
 .empty { padding: 44px 16px; text-align: center; color: #60707d; }
 @media (max-width: 980px) { .workspace { grid-template-columns: 1fr; } }
-@media (max-width: 620px) { header { align-items: flex-start; flex-direction: column; } .toolbar { grid-template-columns: 1fr; } .toolbar button { width: 100%; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric:nth-child(2) { border-right: 0; } .metric:nth-child(-n+2) { border-bottom: 1px solid #d8e0e5; } .camera-grid { grid-template-columns: 1fr; } .values { grid-template-columns: 1fr; } .value-group { border-right: 0; border-bottom: 1px solid #d8e0e5; } .value-group:last-child { border-bottom: 0; } .frame-controls { grid-template-columns: 1fr; } .frame-label { text-align: left; } }
+@media (max-width: 620px) { header { align-items: flex-start; flex-direction: column; } .toolbar { grid-template-columns: 1fr; } .toolbar button { width: 100%; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric:nth-child(2) { border-right: 0; } .metric:nth-child(-n+2) { border-bottom: 1px solid #d8e0e5; } .camera-grid, .detail-chart-grid, .tcp-detail-grid { grid-template-columns: 1fr; } .values { grid-template-columns: 1fr; } .value-group { border-right: 0; border-bottom: 1px solid #d8e0e5; } .value-group:last-child { border-bottom: 0; } .frame-controls { grid-template-columns: 1fr; } .frame-label { text-align: left; } }
 </style>
 </head>
 <body>
@@ -361,10 +371,14 @@ canvas { display: block; width: 100%; height: 190px; background: #fbfcfd; border
         </div>
       </section>
       <aside class="right-column">
-        <section class="panel"><div class="panel-header"><h2>关节角时序</h2></div><div class="chart-wrap"><canvas id="joint-chart" aria-label="关节角时序图"></canvas></div></section>
-        <section class="panel"><div class="panel-header"><h2>TCP 时序</h2></div><div class="chart-wrap"><canvas id="tcp-chart" aria-label="TCP 时序图"></canvas></div></section>
+        <section class="panel"><div class="panel-header"><h2>关节角时序</h2></div><div class="chart-wrap"><div id="joint-chart-legend" class="chart-legend"></div><canvas id="joint-chart" aria-label="关节角时序图"></canvas></div></section>
+        <section class="panel"><div class="panel-header"><h2>TCP 时序</h2></div><div class="chart-wrap"><div id="tcp-chart-legend" class="chart-legend"></div><canvas id="tcp-chart" aria-label="TCP 时序图"></canvas></div></section>
         <section class="panel"><div class="panel-header"><h2>质量报告</h2></div><div id="quality" class="quality"></div></section>
       </aside>
+    </div>
+    <div class="detail-workspace">
+      <section class="panel"><div class="panel-header"><h2>关节角详细时序</h2><span class="quiet">每个关节独立纵轴</span></div><div id="joint-detail-charts" class="detail-chart-grid"></div></section>
+      <section class="panel"><div class="panel-header"><h2>TCP 详细时序</h2><span class="quiet">位置与姿态分开显示</span></div><div class="tcp-detail-grid"><figure class="detail-chart"><figcaption>TCP 位置 xyz (m)</figcaption><div id="tcp-position-legend" class="chart-legend"></div><canvas id="tcp-position-chart" data-series="tcp_pose" data-columns="0,1,2" data-unit="m" aria-label="TCP 位置 xyz 时序图"></canvas></figure><figure class="detail-chart"><figcaption id="tcp-orientation-title">TCP 姿态 rx ry rz (rad)</figcaption><div id="tcp-orientation-legend" class="chart-legend"></div><canvas id="tcp-orientation-chart" data-series="tcp_pose" data-columns="3,4,5" aria-label="TCP 姿态时序图"></canvas></figure></div></section>
     </div>
   </section>
   <section id="empty" class="panel empty" hidden>数据根目录内没有已完成的 trajectory.hdf5。</section>
@@ -372,6 +386,7 @@ canvas { display: block; width: 100%; height: 190px; background: #fbfcfd; border
 <script>
 const state = { list: [], trajectory: null, index: 0 };
 const colors = ["#0e7c86", "#ca5a29", "#447bc4", "#8a4ea6", "#71813a", "#bb3f63", "#677784"];
+const jointLabels = ["J1 (rad)", "J2 (rad)", "J3 (rad)", "J4 (rad)", "J5 (rad)", "J6 (rad)"];
 const byId = (id) => document.getElementById(id);
 
 async function request(url) {
@@ -387,6 +402,21 @@ function seriesValue(series, index) {
   const count = state.trajectory.frame_count;
   const position = count <= 1 ? 0 : Math.round(index * (series.values.length - 1) / (count - 1));
   return series.values[Math.max(0, Math.min(series.values.length - 1, position))];
+}
+function tcpLabels(metadata) {
+  return metadata.pose_representation === "xyz_rxryrz"
+    ? ["x (m)", "y (m)", "z (m)", "rx (rad)", "ry (rad)", "rz (rad)"]
+    : ["x (m)", "y (m)", "z (m)", "qx", "qy", "qz", "qw"];
+}
+function tcpValueLabels(metadata) { return tcpLabels(metadata).map((label) => label.split(" ")[0]); }
+function renderLegend(id, labels, columns) {
+  const node = byId(id); node.replaceChildren();
+  for (const [index, column] of columns.entries()) {
+    const item = document.createElement("span"); item.className = "legend-item";
+    const swatch = document.createElement("span"); swatch.className = "legend-swatch"; swatch.style.background = colors[column % colors.length];
+    const label = document.createElement("span"); label.textContent = labels[index] || `value ${column}`;
+    item.append(swatch, label); node.append(item);
+  }
 }
 
 async function refreshList() {
@@ -425,8 +455,35 @@ function renderTrajectory() {
   byId("pose-format").textContent = metadata.pose_representation || "-";
   byId("tcp-title").textContent = `TCP ${metadata.pose_representation === "xyz_rxryrz" ? "(m, rad)" : "(m, xyzw)"}`;
   const slider = byId("timeline"); slider.max = String(Math.max(0, data.frame_count - 1)); slider.value = String(state.index);
-  renderCameraViews(); renderQuality(data.quality); drawChart(byId("joint-chart"), data.joint_positions, "rad"); drawChart(byId("tcp-chart"), data.tcp_pose, metadata.pose_representation === "xyz_rxryrz" ? "m / rad" : "m / xyzw");
+  renderCameraViews(); renderQuality(data.quality); renderCharts();
   renderFrame();
+}
+
+function renderCharts() {
+  const data = state.trajectory; const labels = tcpLabels(data.metadata); const jointColumns = [0, 1, 2, 3, 4, 5]; const tcpColumns = labels.map((_, index) => index);
+  renderLegend("joint-chart-legend", jointLabels, jointColumns); renderLegend("tcp-chart-legend", labels, tcpColumns);
+  drawChart(byId("joint-chart"), data.joint_positions, "rad", jointColumns);
+  drawChart(byId("tcp-chart"), data.tcp_pose, data.metadata.pose_representation === "xyz_rxryrz" ? "m / rad" : "m / xyzw", tcpColumns);
+  renderJointDetailCharts(data.joint_positions); renderTcpDetailCharts(data.tcp_pose, data.metadata);
+}
+
+function renderJointDetailCharts(series) {
+  const host = byId("joint-detail-charts"); host.replaceChildren();
+  if (!series || !series.values.length) { host.textContent = "未采集关节角。"; return; }
+  for (const [index, label] of jointLabels.entries()) {
+    const figure = document.createElement("figure"); figure.className = "detail-chart";
+    const caption = document.createElement("figcaption"); const swatch = document.createElement("span"); swatch.className = "legend-swatch"; swatch.style.background = colors[index % colors.length]; caption.append(swatch, document.createTextNode(label));
+    const canvas = document.createElement("canvas"); canvas.dataset.series = "joint_positions"; canvas.dataset.columns = String(index); canvas.dataset.unit = "rad"; canvas.setAttribute("aria-label", `${label} 时序图`);
+    figure.append(caption, canvas); host.append(figure); drawChart(canvas, series, "rad", [index]);
+  }
+}
+
+function renderTcpDetailCharts(series, metadata) {
+  const labels = tcpLabels(metadata); const orientationColumns = labels.slice(3).map((_, index) => index + 3);
+  byId("tcp-orientation-title").textContent = metadata.pose_representation === "xyz_rxryrz" ? "TCP 姿态 rx ry rz (rad)" : "TCP 姿态 xyzw";
+  renderLegend("tcp-position-legend", labels.slice(0, 3), [0, 1, 2]); renderLegend("tcp-orientation-legend", labels.slice(3), orientationColumns);
+  const orientationCanvas = byId("tcp-orientation-chart"); orientationCanvas.dataset.columns = orientationColumns.join(","); orientationCanvas.dataset.unit = metadata.pose_representation === "xyz_rxryrz" ? "rad" : "xyzw";
+  drawChart(byId("tcp-position-chart"), series, "m", [0, 1, 2]); drawChart(orientationCanvas, series, orientationCanvas.dataset.unit, orientationColumns);
 }
 
 function renderCameraViews() {
@@ -446,7 +503,7 @@ function renderFrame() {
   byId("timeline").value = String(index);
   byId("frame-label").textContent = `${index + 1} / ${data.frame_count} | ${format(elapsedAt(index), 3)} s${data.is_intervene[index] ? " | intervene" : ""}`;
   byId("joints").textContent = joint ? joint.map((value, i) => `J${i + 1}: ${format(value)}`).join("\n") : "未采集";
-  byId("tcp").textContent = tcp ? tcp.map((value, i) => `${["x", "y", "z", "rx", "ry", "rz", "qw"][i]}: ${format(value)}`).join("\n") : "未采集";
+  byId("tcp").textContent = tcp ? tcp.map((value, i) => `${tcpValueLabels(data.metadata)[i]}: ${format(value)}`).join("\n") : "未采集";
   byId("gripper").textContent = gripper ? format(gripper[0], 6) : "未采集";
   for (const image of document.querySelectorAll(".camera-image")) {
     const camera = image.dataset.camera;
@@ -469,19 +526,19 @@ function renderQuality(quality) {
   }
 }
 
-function drawChart(canvas, series, unit) {
+function drawChart(canvas, series, unit, columns) {
   const context = canvas.getContext("2d"); const width = Math.max(1, Math.round(canvas.clientWidth * devicePixelRatio)); const height = Math.max(1, Math.round(canvas.clientHeight * devicePixelRatio));
   if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
   context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); const cssWidth = canvas.clientWidth; const cssHeight = canvas.clientHeight;
   context.clearRect(0, 0, cssWidth, cssHeight); context.fillStyle = "#fbfcfd"; context.fillRect(0, 0, cssWidth, cssHeight);
   if (!series || !series.values.length) { context.fillStyle = "#60707d"; context.font = "13px Arial"; context.fillText("未采集", 12, 24); return; }
   const padding = {left: 46, right: 12, top: 20, bottom: 28}; const plotWidth = cssWidth - padding.left - padding.right; const plotHeight = cssHeight - padding.top - padding.bottom;
-  const values = series.chart_values || series.values; const flat = values.flat(); let minimum = Math.min(...flat); let maximum = Math.max(...flat);
+  const values = series.chart_values || series.values; const visibleColumns = columns || Array.from({length: series.width}, (_, index) => index); const flat = values.flatMap((row) => visibleColumns.map((column) => row[column])); let minimum = Math.min(...flat); let maximum = Math.max(...flat);
   if (minimum === maximum) { minimum -= 1; maximum += 1; } const margin = (maximum - minimum) * .08; minimum -= margin; maximum += margin;
   context.strokeStyle = "#d8e0e5"; context.lineWidth = 1; context.fillStyle = "#60707d"; context.font = "11px Arial";
   for (let step = 0; step <= 4; step += 1) { const y = padding.top + plotHeight * step / 4; context.beginPath(); context.moveTo(padding.left, y); context.lineTo(cssWidth - padding.right, y); context.stroke(); const value = maximum - (maximum - minimum) * step / 4; context.fillText(format(value, 2), 3, y + 4); }
-  context.fillText(unit, padding.left, cssHeight - 8);
-  for (let column = 0; column < series.width; column += 1) {
+  context.fillText("0 s", padding.left, cssHeight - 8); context.textAlign = "right"; const duration = series.timestamps?.length ? series.timestamps[series.timestamps.length - 1] - series.timestamps[0] : 0; context.fillText(`${format(duration, 2)} s | ${unit}`, cssWidth - padding.right, cssHeight - 8); context.textAlign = "left";
+  for (const column of visibleColumns) {
     context.strokeStyle = colors[column % colors.length]; context.lineWidth = 1.3; context.beginPath();
     values.forEach((row, index) => { const x = padding.left + plotWidth * (values.length <= 1 ? 0 : index / (values.length - 1)); const y = padding.top + (maximum - row[column]) / (maximum - minimum) * plotHeight; if (index === 0) context.moveTo(x, y); else context.lineTo(x, y); }); context.stroke();
   }
@@ -492,7 +549,7 @@ byId("trajectory").addEventListener("change", (event) => loadTrajectory(event.ta
 byId("timeline").addEventListener("input", (event) => { state.index = Number(event.target.value); renderFrame(); });
 byId("previous").addEventListener("click", () => { state.index = Math.max(0, state.index - 1); renderFrame(); });
 byId("next").addEventListener("click", () => { state.index = Math.min(state.trajectory.frame_count - 1, state.index + 1); renderFrame(); });
-window.addEventListener("resize", () => { if (state.trajectory) { drawChart(byId("joint-chart"), state.trajectory.joint_positions, "rad"); drawChart(byId("tcp-chart"), state.trajectory.tcp_pose, state.trajectory.metadata.pose_representation === "xyz_rxryrz" ? "m / rad" : "m / xyzw"); } });
+window.addEventListener("resize", () => { if (!state.trajectory) return; renderCharts(); for (const canvas of document.querySelectorAll("canvas[data-series]")) { const columns = canvas.dataset.columns.split(",").map(Number); drawChart(canvas, state.trajectory[canvas.dataset.series], canvas.dataset.unit, columns); } });
 window.addEventListener("keydown", (event) => { if (!state.trajectory || ["INPUT", "SELECT"].includes(document.activeElement.tagName)) return; if (event.key === "ArrowLeft") { event.preventDefault(); state.index = Math.max(0, state.index - 1); renderFrame(); } if (event.key === "ArrowRight") { event.preventDefault(); state.index = Math.min(state.trajectory.frame_count - 1, state.index + 1); renderFrame(); } });
 refreshList();
 </script>
