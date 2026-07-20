@@ -295,11 +295,11 @@ h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .quiet { color: #60707d; }
 header .quiet { color: #c9d5df; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 main { max-width: 1580px; margin: 0 auto; padding: 20px clamp(16px, 3vw, 40px) 40px; }
-.toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; margin-bottom: 16px; }
+.toolbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 12px; align-items: center; margin-bottom: 16px; }
 select { width: 100%; min-width: 0; height: 38px; background: #ffffff; border: 1px solid #aebbc5; border-radius: 4px; padding: 0 10px; color: #18212b; }
 button { min-width: 38px; min-height: 38px; border: 1px solid #256e79; border-radius: 4px; padding: 0 13px; background: #0e7c86; color: #ffffff; }
 button:hover { background: #086773; }
-button:disabled { cursor: wait; opacity: .65; }
+button:disabled { cursor: not-allowed; opacity: .65; }
 .status { min-height: 20px; margin: 0 0 16px; color: #a53737; font-size: 14px; }
 .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #c5d0d8; background: #ffffff; margin-bottom: 16px; }
 .metric { min-width: 0; padding: 12px 14px; border-right: 1px solid #d8e0e5; }
@@ -334,6 +334,8 @@ canvas { display: block; width: 100%; height: 190px; background: #fbfcfd; border
 .detail-chart { min-width: 0; margin: 0; }
 .detail-chart figcaption { display: flex; align-items: center; gap: 6px; min-height: 24px; color: #384b58; font-size: 13px; font-weight: 700; }
 .detail-chart canvas { height: 230px; }
+.joint-combined-chart { padding: 12px 14px 0; }
+.joint-combined-chart canvas { height: 280px; }
 .tcp-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px 14px 14px; }
 .tcp-detail-grid .detail-chart canvas { height: 270px; }
 .quality { padding: 12px 14px 14px; font-size: 14px; }
@@ -351,7 +353,7 @@ canvas { display: block; width: 100%; height: 190px; background: #fbfcfd; border
 <body>
 <header><h1>Piper 轨迹查看器</h1><span id="root" class="quiet"></span></header>
 <main>
-  <div class="toolbar"><select id="trajectory" aria-label="选择轨迹"></select><button id="refresh" type="button">刷新列表</button></div>
+  <div class="toolbar"><button id="trajectory-previous" type="button" title="查看上一条轨迹" aria-label="查看上一条轨迹">上一条轨迹</button><select id="trajectory" aria-label="选择轨迹"></select><button id="trajectory-next" type="button" title="查看下一条轨迹" aria-label="查看下一条轨迹">下一条轨迹</button><button id="refresh" type="button">刷新列表</button></div>
   <p id="status" class="status" role="status"></p>
   <section id="content" hidden>
     <div class="summary">
@@ -377,14 +379,14 @@ canvas { display: block; width: 100%; height: 190px; background: #fbfcfd; border
       </aside>
     </div>
     <div class="detail-workspace">
-      <section class="panel"><div class="panel-header"><h2>关节角详细时序</h2><span class="quiet">每个关节独立纵轴</span></div><div id="joint-detail-charts" class="detail-chart-grid"></div></section>
       <section class="panel"><div class="panel-header"><h2>TCP 详细时序</h2><span class="quiet">位置与姿态分开显示</span></div><div class="tcp-detail-grid"><figure class="detail-chart"><figcaption>TCP 位置 xyz (m)</figcaption><div id="tcp-position-legend" class="chart-legend"></div><canvas id="tcp-position-chart" data-series="tcp_pose" data-columns="0,1,2" data-unit="m" aria-label="TCP 位置 xyz 时序图"></canvas></figure><figure class="detail-chart"><figcaption id="tcp-orientation-title">TCP 姿态 rx ry rz (rad)</figcaption><div id="tcp-orientation-legend" class="chart-legend"></div><canvas id="tcp-orientation-chart" data-series="tcp_pose" data-columns="3,4,5" aria-label="TCP 姿态时序图"></canvas></figure></div></section>
+      <section class="panel"><div class="panel-header"><h2>关节角详细时序</h2><span class="quiet">合并对比与单轴细节</span></div><figure class="detail-chart joint-combined-chart"><figcaption>六关节角合并详细时序 (rad)</figcaption><div id="joint-combined-legend" class="chart-legend"></div><canvas id="joint-combined-detail-chart" data-series="joint_positions" data-columns="0,1,2,3,4,5" data-unit="rad" aria-label="六关节角合并详细时序图"></canvas></figure><div id="joint-detail-charts" class="detail-chart-grid"></div></section>
     </div>
   </section>
   <section id="empty" class="panel empty" hidden>数据根目录内没有已完成的 trajectory.hdf5。</section>
 </main>
 <script>
-const state = { list: [], trajectory: null, index: 0 };
+const state = { list: [], trajectory: null, index: 0, loadingTrajectory: false };
 const colors = ["#0e7c86", "#ca5a29", "#447bc4", "#8a4ea6", "#71813a", "#bb3f63", "#677784"];
 const jointLabels = ["J1 (rad)", "J2 (rad)", "J3 (rad)", "J4 (rad)", "J5 (rad)", "J6 (rad)"];
 const byId = (id) => document.getElementById(id);
@@ -433,11 +435,23 @@ async function refreshList() {
     }
     byId("empty").hidden = state.list.length > 0; byId("content").hidden = state.list.length === 0;
     if (state.list.length) await loadTrajectory(state.list[0].path);
+    else { state.trajectory = null; updateTrajectoryNavigation(); }
   } catch (error) { setStatus(error.message); }
   finally { button.disabled = false; }
 }
 
+function updateTrajectoryNavigation() {
+  const currentPath = state.trajectory?.path || byId("trajectory").value;
+  const currentIndex = state.list.findIndex((item) => item.path === currentPath);
+  const canNavigate = !state.loadingTrajectory && currentIndex >= 0;
+  byId("trajectory-previous").disabled = !canNavigate || currentIndex === 0;
+  byId("trajectory-next").disabled = !canNavigate || currentIndex === state.list.length - 1;
+  byId("trajectory").disabled = state.loadingTrajectory || state.list.length === 0;
+}
+
 async function loadTrajectory(path) {
+  if (state.loadingTrajectory) return;
+  state.loadingTrajectory = true; updateTrajectoryNavigation();
   setStatus("正在读取轨迹...");
   try {
     state.trajectory = await request(`/api/trajectory?path=${encodeURIComponent(path)}`);
@@ -445,6 +459,13 @@ async function loadTrajectory(path) {
     byId("trajectory").value = path; byId("content").hidden = false; byId("empty").hidden = true;
     renderTrajectory(); setStatus("");
   } catch (error) { setStatus(error.message); }
+  finally { state.loadingTrajectory = false; updateTrajectoryNavigation(); }
+}
+
+function loadAdjacentTrajectory(offset) {
+  const currentIndex = state.list.findIndex((item) => item.path === state.trajectory?.path);
+  const target = state.list[currentIndex + offset];
+  if (target) void loadTrajectory(target.path);
 }
 
 function renderTrajectory() {
@@ -469,6 +490,9 @@ function renderCharts() {
 
 function renderJointDetailCharts(series) {
   const host = byId("joint-detail-charts"); host.replaceChildren();
+  const columns = [0, 1, 2, 3, 4, 5];
+  renderLegend("joint-combined-legend", jointLabels, columns);
+  drawChart(byId("joint-combined-detail-chart"), series, "rad", columns);
   if (!series || !series.values.length) { host.textContent = "未采集关节角。"; return; }
   for (const [index, label] of jointLabels.entries()) {
     const figure = document.createElement("figure"); figure.className = "detail-chart";
@@ -546,6 +570,8 @@ function drawChart(canvas, series, unit, columns) {
 
 byId("refresh").addEventListener("click", refreshList);
 byId("trajectory").addEventListener("change", (event) => loadTrajectory(event.target.value));
+byId("trajectory-previous").addEventListener("click", () => loadAdjacentTrajectory(-1));
+byId("trajectory-next").addEventListener("click", () => loadAdjacentTrajectory(1));
 byId("timeline").addEventListener("input", (event) => { state.index = Number(event.target.value); renderFrame(); });
 byId("previous").addEventListener("click", () => { state.index = Math.max(0, state.index - 1); renderFrame(); });
 byId("next").addEventListener("click", () => { state.index = Math.min(state.trajectory.frame_count - 1, state.index + 1); renderFrame(); });

@@ -55,7 +55,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect validate <trajectory_path>/traje
   --config configs/mock_piper.yaml
 ```
 
-也可以启动本地只读查看器，在浏览器同页同步查看两路相机帧、关节/TCP 总览、六关节独立曲线、TCP 位置/姿态分图、夹爪时序和质量报告：
+也可以启动本地只读查看器，在浏览器同页同步查看两路相机帧、关节/TCP 总览、TCP 位置/姿态分图、六关节合并与独立曲线、夹爪时序和质量报告；顶部按钮可按修改时间顺序切换上一条或下一条轨迹：
 
 ```bash
 # 从 YAML 的 session.output_root 查找轨迹，并在 http://127.0.0.1:8765 打开查看器。

@@ -67,7 +67,10 @@ def test_viewer_rejects_paths_outside_data_root(tmp_path: Path) -> None:
 
 
 def test_viewer_page_exposes_labeled_detailed_joint_and_tcp_charts() -> None:
+    assert 'id="trajectory-previous"' in _PAGE
+    assert 'id="trajectory-next"' in _PAGE
     assert 'id="joint-detail-charts"' in _PAGE
+    assert 'id="joint-combined-detail-chart"' in _PAGE
     assert "关节角详细时序" in _PAGE
     assert 'id="tcp-position-chart"' in _PAGE
     assert 'id="tcp-orientation-chart"' in _PAGE
