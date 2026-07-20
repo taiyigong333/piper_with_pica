@@ -15,6 +15,7 @@ from .piper_state import read_piper_state
 from .quality import validate_hdf5
 from .teleop_processes import teleop_process_report, terminate_teleop_processes
 from .teleop_session import load_teleop_config, run_calibration, run_sessions
+from .trajectory_viewer import run_trajectory_viewer
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -45,6 +46,12 @@ def _parser() -> argparse.ArgumentParser:
     teleop_status = subparsers.add_parser("teleop-status", help="列出当前用户残留的 Pika 遥操进程")
     teleop_stop = subparsers.add_parser("teleop-stop", help="显式终止残留的 Pika 遥操进程")
     teleop_stop.add_argument("--terminate", action="store_true", help="执行终止；未提供时仅输出进程列表")
+    trajectory_viewer = subparsers.add_parser("trajectory-viewer", help="在浏览器中只读查看已采集轨迹")
+    trajectory_source = trajectory_viewer.add_mutually_exclusive_group(required=True)
+    trajectory_source.add_argument("--config", help="采集 YAML；从 session.output_root 查找轨迹")
+    trajectory_source.add_argument("--root", help="包含 trajectory.hdf5 的数据根目录")
+    trajectory_viewer.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅本机可访问")
+    trajectory_viewer.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
     return parser
 
 
@@ -89,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
             report = terminate_teleop_processes() if args.terminate else teleop_process_report()
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("result", "pass") == "pass" else 1
+        if args.command == "trajectory-viewer":
+            root = load_config(args.config).session.output_root if args.config else Path(args.root)
+            run_trajectory_viewer(root=root, host=args.host, port=args.port)
+            return 0
         if args.command == "teleop-session":
             report = run_sessions(
                 args.config,

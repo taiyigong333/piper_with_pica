@@ -55,6 +55,16 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect validate <trajectory_path>/traje
   --config configs/mock_piper.yaml
 ```
 
+也可以启动本地只读查看器，在浏览器同页同步查看两路相机帧、对齐后的关节/TCP/夹爪时序和质量报告：
+
+```bash
+# 从 YAML 的 session.output_root 查找轨迹，并在 http://127.0.0.1:8765 打开查看器。
+UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect trajectory-viewer \
+  --config configs/mock_piper.yaml
+```
+
+完整命令说明见 [docs/使用说明.md](docs/使用说明.md)，查看器操作见 [docs/2026-07-20_02_轨迹可视化查看器.md](docs/2026-07-20_02_轨迹可视化查看器.md)。
+
 ## 真实设备采集
 
 1. 复制并填写现场采集配置。`configs/现场_piper.yaml` 已被 Git 忽略，不会提交设备序列号、标定和采集员信息：
@@ -138,4 +148,4 @@ UV_CACHE_DIR=/tmp/uv-cache uv run piper-collect teleop-session \
 - `robot.initial_pose` 仅供 `teleop-session` 在已有 ROS 遥操启动前使用；采集与 `preflight` 仍严格只读。TCP 目标使用与采集一致的物理 TCP，控制时会反算 `tool_offset_m` 后下发 Piper 原生末端坐标。
 - 保持 `session.format_version`、字段名、单位或编码发生不兼容变化时，必须提升格式版本，并同步更新 `quality.py`。
 
-文档按日期和同日序号排序；交接文档不参与排序。详细边界、数据流和现场接入项见 [docs/2026-07-18_01_架构与数据契约.md](docs/2026-07-18_01_架构与数据契约.md)、[docs/2026-07-18_02_Pika_Sense遥操采集流程.md](docs/2026-07-18_02_Pika_Sense遥操采集流程.md)、[docs/2026-07-19_01_遥操脚本与现场操作说明.md](docs/2026-07-19_01_遥操脚本与现场操作说明.md)、[docs/2026-07-20_01_遥操收尾与轨迹检查.md](docs/2026-07-20_01_遥操收尾与轨迹检查.md) 和 [docs/项目交接.md](docs/项目交接.md)。
+`docs/使用说明.md` 是不带日期的长期使用入口，必须在每次功能或流程变更时维护；其他技术文档按日期和同日序号排序，交接文档不参与排序。详细边界、数据流和现场接入项见 [docs/2026-07-18_01_架构与数据契约.md](docs/2026-07-18_01_架构与数据契约.md)、[docs/2026-07-18_02_Pika_Sense遥操采集流程.md](docs/2026-07-18_02_Pika_Sense遥操采集流程.md)、[docs/2026-07-19_01_遥操脚本与现场操作说明.md](docs/2026-07-19_01_遥操脚本与现场操作说明.md)、[docs/2026-07-20_01_遥操收尾与轨迹检查.md](docs/2026-07-20_01_遥操收尾与轨迹检查.md)、[docs/2026-07-20_02_轨迹可视化查看器.md](docs/2026-07-20_02_轨迹可视化查看器.md)、[docs/使用说明.md](docs/使用说明.md) 和 [docs/项目交接.md](docs/项目交接.md)。
