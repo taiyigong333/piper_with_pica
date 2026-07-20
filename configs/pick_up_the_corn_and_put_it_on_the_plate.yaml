@@ -1,0 +1,85 @@
+# 真实设备模板。所有“待填写”项都必须在现场配置副本中替换，禁止提交标定和人员敏感信息。
+session:
+  output_root: /home/ubuntu/gcj/projects/data_collect/data/corm_in_plate
+  data_type: real
+  language_instruction: "pick up the corn and put it on the plate"
+  collector_hash: "taiyi"
+  format_version: "1.0.0"
+  duration_s: 60
+  # Piper TCP 原生格式为 [x, y, z, rx, ry, rz]，位置单位 m、欧拉角单位 rad。
+  pose_representation: xyz_rxryrz
+  hdf5:
+    queue_size: 256
+    batch_size: 16
+    flush_every_batches: 10
+    queue_put_timeout_s: 2.0
+    jpeg_quality: 95
+
+modalities:
+  rgb: true
+  depth: false
+  arm_joint_positions: true
+  tcp_pose: true
+  gripper_position: true
+
+acquisition:
+  robot_hz: 60
+  camera_rig_hz: 30
+  max_alignment_age_ms: 100
+
+cameras:
+  - name: camera_front
+    driver: realsense
+    model: RealSense_D435
+    serial_number: "254522072098"
+    width: 640
+    height: 480
+    depth_width: 640
+    depth_height: 480
+    fps: 30
+    color_order: rgb
+    enabled: true
+    align_depth_to_color: true
+    # 以采集参考 base 为源坐标、相机光学坐标系为目标坐标的现场标定 4×4 矩阵。
+    base_to_camera: null
+  - name: camera_wrist_right
+    driver: realsense
+    model: RealSense_D405
+    serial_number: "419122270341"
+    width: 640
+    height: 480
+    depth_width: 640
+    depth_height: 480
+    fps: 30
+    color_order: rgb
+    enabled: true
+    align_depth_to_color: true
+    base_to_camera: null
+
+robot: # 机器人设备及 TCP 变换配置。
+  name: piper # 机器人名称，会写入 /robot_model/robot_single。
+  driver: piper # 机器人适配器名称；当前支持 piper 和 mock。
+  joint_count: 6 # 关节数；Piper 固定为 6，其他机器人可通过其适配器和此配置扩展。
+  can_name: can0 # 已由现场激活的 Piper SocketCAN 接口名；本工程不会配置 CAN 接口。
+  dh_is_offset: 1 # Piper SDK DH 偏置开关：1 表示 J2/J3 使用 SDK 默认偏置；仅影响 SDK FK，当前默认读取原生末端反馈。
+  tool_offset_m: [0.0, 0.0, 0.0] # TCP 相对 Piper 法兰末端的 [x, y, z] 偏移（m，J6 坐标系）；无工具时保持全 0。
+  base_to_robot: null # 现场标定的 4×4 齐次矩阵（采集参考 base -> Piper 基座）；未知时为 null，禁止伪造单位阵。
+  initial_pose: # 遥操会话在启动 ROS 前执行；此处默认使用关节角控制。
+    enabled: true # true 才发送起始位姿控制帧；若只想手动调整位置，请改为 false。
+    mode: joint # 当前模式：joint=六关节角 rad；切换 TCP 时改为 tcp。
+    # 读取/更新关节角：uv run piper-collect read-piper-state --config configs/pick_up_the_corn_and_put_it_on_the_plate.yaml
+    # 数组顺序固定为 [J1, J2, J3, J4, J5, J6]，单位都是 rad；整行可用 # 注释掉作为历史备份。
+    # 当前目标由 2026-07-19 的只读反馈记录；每次想以当前姿态作为起点时，重新执行上方读取命令后替换本行。
+    joint_positions_rad: [0.0112224671, 0.8612501727, -1.0232865404, -0.0676838684, 1.3297663571, 0.2618517477]
+    # TCP 备用方式：需要时将 mode 改为 tcp，并取消下一行的 #；格式为 [x, y, z, rx, ry, rz]，单位 m + rad。
+    # tcp_pose: [0.125726, -0.004566, 0.365472, 3.0752526887, 0.4907691324, 2.8740511326]
+    # mode=tcp 时会忽略 joint_positions_rad；mode=joint 时会忽略 tcp_pose。
+    speed_percent: 20 # Piper SDK 运动速度百分比，首次运行保持低速。
+    timeout_s: 5 # 从使能到到位的最长等待秒数；超时后编排层切换为待机模式。
+    joint_tolerance_rad: 0.3 # joint 到位的各轴最大误差（rad）。
+    position_tolerance_m: 0.1 # tcp 到位的位置欧氏误差（m）。
+    orientation_tolerance_rad: 0.5 # tcp 到位的欧拉角最大回绕误差（rad）。
+
+gripper:
+  enabled: true
+  driver: piper
