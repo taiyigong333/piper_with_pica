@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import termios
+import threading
 import time
 import tty
 from typing import Any, Callable
@@ -220,34 +221,37 @@ class ExternalTeleop:
         return errors
 
     def stop(self, timeout_s: float = 8.0) -> None:
-        """从后向前优雅关闭 ROS 进程组，并在必要时逐级强制回收。"""
+        """并行关闭 ROS 进程组，避免控制器和传感器收尾时间串行叠加。"""
 
-        for managed in reversed(self._processes):
-            process = managed.process
-            try:
-                self._stop_process_group(process, timeout_s)
-            except ProcessLookupError:
-                pass
-            finally:
+        managed_processes = list(reversed(self._processes))
+        try:
+            self._stop_process_groups([managed.process for managed in managed_processes], timeout_s)
+        finally:
+            for managed in managed_processes:
                 managed.log_file.close()
         self._processes.clear()
 
     @staticmethod
-    def _stop_process_group(process: Any, timeout_s: float) -> None:
-        """以 ROS launch 能识别的 SIGINT 优先关闭整个独立进程组。"""
+    def _stop_process_groups(processes: list[Any], timeout_s: float) -> None:
+        """每一轮同时发信号，再共同等待全部独立 ROS 进程组退出。"""
 
-        process_group = process.pid
+        active = [process for process in processes if ExternalTeleop._process_group_alive(process.pid)]
         for signal_value, wait_s in (
             (signal.SIGINT, timeout_s),
             (signal.SIGTERM, 3.0),
             (signal.SIGKILL, 2.0),
         ):
-            if not ExternalTeleop._process_group_alive(process_group):
+            if not active:
                 break
-            os.killpg(process_group, signal_value)
-            if ExternalTeleop._wait_for_process_group_exit(process_group, wait_s):
-                break
-        if process.poll() is None:
+            for process in active:
+                try:
+                    os.killpg(process.pid, signal_value)
+                except ProcessLookupError:
+                    pass
+            active = ExternalTeleop._wait_for_process_groups_exit(active, wait_s)
+        for process in active:
+            if process.poll() is not None:
+                continue
             try:
                 process.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
@@ -264,13 +268,14 @@ class ExternalTeleop:
         return True
 
     @staticmethod
-    def _wait_for_process_group_exit(process_group: int, timeout_s: float) -> bool:
+    def _wait_for_process_groups_exit(processes: list[Any], timeout_s: float) -> list[Any]:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            if not ExternalTeleop._process_group_alive(process_group):
-                return True
+            active = [process for process in processes if ExternalTeleop._process_group_alive(process.pid)]
+            if not active:
+                return []
             time.sleep(0.05)
-        return not ExternalTeleop._process_group_alive(process_group)
+        return [process for process in processes if ExternalTeleop._process_group_alive(process.pid)]
 
     def _raise_for_log_health(self, managed: _ManagedProcess) -> None:
         failure = self._log_failure(managed)
@@ -312,6 +317,10 @@ def _ros_child_environment() -> dict[str, str]:
     virtual_env = environment.pop("VIRTUAL_ENV", None)
     environment.pop("PYTHONHOME", None)
     environment.pop("PYTHONPATH", None)
+    # OpenCV 在首条采集后会把 .venv 的 Qt xcb 插件目录写进父进程环境；若
+    # 继承给第二条 ROS 的 RViz，会加载 ABI 不匹配的插件并以 exit code -6 退出。
+    environment.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+    environment.pop("QT_PLUGIN_PATH", None)
     if virtual_env:
         virtual_bin = str(Path(virtual_env) / "bin")
         path_parts = environment.get("PATH", "").split(os.pathsep)
@@ -457,6 +466,7 @@ def run_session(
     on_complete: str | None = None,
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
+    show_calibration_reminder: bool = True,
 ) -> dict[str, Any]:
     """执行一条人工遥操轨迹，并返回保存或删除后的会话摘要。"""
 
@@ -465,11 +475,12 @@ def run_session(
     if on_complete not in {None, "save", "delete"}:
         raise ConfigurationError("on_complete 只支持 save、delete 或 null。")
 
-    _wait_for_space(
-        "已按现场情况完成基站校准（首次或基站、频道变更必须 force 校准）。",
-        input_fn=input_fn,
-        output_fn=output_fn,
-    )
+    if show_calibration_reminder:
+        _wait_for_space(
+            "已按现场情况完成基站校准（首次或基站、频道变更必须 force 校准）。",
+            input_fn=input_fn,
+            output_fn=output_fn,
+        )
     _preflight_or_raise(config)
     _wait_for_space(
         "预检通过，已确认工作区无人且路径安全；下一步将由本项目移动 Piper 至配置的起始位姿。",
@@ -480,9 +491,8 @@ def run_session(
 
     log_directory = config.session.output_root / "teleop_logs" / datetime.now().strftime("%Y%m%dT%H%M%S")
     teleop = ExternalTeleop(teleop_config)
-    import threading
-
     stop_request = threading.Event()
+    capture_stopped = threading.Event()
     result_box: dict[str, CollectionResult] = {}
     error_box: dict[str, BaseException] = {}
 
@@ -491,6 +501,7 @@ def run_session(
             result_box["result"] = DataCollector(config).run(
                 duration_s=duration_s,
                 stop_request=stop_request,
+                capture_stopped=capture_stopped,
                 until_stopped=duration_s is None,
             )
         except BaseException as error:
@@ -517,6 +528,10 @@ def run_session(
             health_check=lambda: _collection_health_or_raise(teleop, error_box),
         )
         stop_request.set()
+        output_fn("已收到停止请求：已禁止新帧进入采集队列，正在关闭 HDF5 并生成质检文件。")
+        if not capture_stopped.wait(timeout=3.0):
+            raise CollectionError("采集线程未在 3 秒内停止取帧；已中止会话收尾。")
+        output_fn("采集已停止，正在完成写盘。")
         collector_thread.join(timeout=30.0)
         if collector_thread.is_alive():
             raise CollectionError("采集器未在 30 秒内完成收尾。")
@@ -531,6 +546,7 @@ def run_session(
         stop_request.set()
         if collector_thread is not None and collector_thread.is_alive():
             collector_thread.join(timeout=30.0)
+        output_fn("正在并行关闭 Pika ROS 进程，请等待。")
         teleop.stop()
 
     result = result_box.get("result")
@@ -571,6 +587,7 @@ def run_sessions(
                 on_complete=on_complete,
                 input_fn=input_fn,
                 output_fn=output_fn,
+                show_calibration_reminder=not repeat or not reports,
             )
         )
         if not repeat:

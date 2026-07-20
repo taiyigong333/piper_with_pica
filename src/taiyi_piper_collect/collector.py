@@ -106,13 +106,16 @@ class DataCollector:
         duration_s: float | None = None,
         *,
         stop_request: threading.Event | None = None,
+        capture_stopped: threading.Event | None = None,
         until_stopped: bool = False,
     ) -> CollectionResult:
         """执行一次采集。
 
         常规 ``collect`` 使用有限时长，保持原有接口语义。遥操会话由外部人工结束，
         因此可传入 ``stop_request`` 并设置 ``until_stopped=True``；这样只有操作员
-        已停止遥操后，编排层才会请求采集器收尾并发布正式数据包。
+        已停止遥操后，编排层才会请求采集器收尾并发布正式数据包。可选的
+        ``capture_stopped`` 会在相机/机器人工作线程全部退出后置位，此时不会
+        再有新的采样进入 HDF5 队列，但 HDF5 收尾和质量文件可能仍在进行。
         """
 
         duration = None if until_stopped else (duration_s if duration_s is not None else self.config.session.duration_s)
@@ -120,6 +123,8 @@ class DataCollector:
             raise CollectionError("未设置采集时长；请提供 --duration、session.duration_s 或外部停止信号。")
         if duration is not None and duration <= 0:
             raise CollectionError("采集时长必须为正数。")
+        if capture_stopped is not None:
+            capture_stopped.clear()
         trajectory_id = self.config.session.trajectory_id or self._make_trajectory_id()
         trajectory_dir = (
             self.config.session.output_root
@@ -148,12 +153,26 @@ class DataCollector:
             with stats_lock:
                 setattr(stats, attribute, getattr(stats, attribute) + 1)
 
-        def enqueue(event: tuple[str, Any] | str) -> None:
-            try:
-                data_queue.put(event, timeout=self.config.session.hdf5.queue_put_timeout_s)
-            except Full as error:
-                increment("queue_timeouts")
-                raise CollectionError("HDF5 队列已满，已停止采集以避免静默丢数。") from error
+        def stop_requested() -> bool:
+            return stop_event.is_set() or (stop_request is not None and stop_request.is_set())
+
+        def enqueue(event: tuple[str, Any] | str, *, discard_if_stopping: bool = False) -> bool:
+            """将事件写入队列；停止时不让正在读取的相机帧延迟入队。"""
+
+            deadline = time.monotonic() + self.config.session.hdf5.queue_put_timeout_s
+            while True:
+                if discard_if_stopping and stop_requested():
+                    return False
+                remaining_s = deadline - time.monotonic()
+                if remaining_s <= 0:
+                    increment("queue_timeouts")
+                    raise CollectionError("HDF5 队列已满，已停止采集以避免静默丢数。")
+                try:
+                    # 短等待让外部空格停止信号能打断队列背压，不额外拖入新帧。
+                    data_queue.put(event, timeout=min(0.05, remaining_s))
+                    return True
+                except Full:
+                    continue
 
         try:
             cameras = {camera.name: create_camera(camera) for camera in self.config.enabled_cameras}
@@ -177,28 +196,41 @@ class DataCollector:
             def sample_robot() -> None:
                 assert robot is not None
                 try:
+                    if stop_requested():
+                        return
                     state = robot.read()
+                    if stop_requested():
+                        return
                     if self.config.modalities.gripper_position:
                         if gripper is None:
                             raise CollectionError("夹爪位置模态已启用，但没有可用夹爪设备。")
                         position = np.asarray([gripper.read_position()], dtype=np.float64)
                         state = replace(state, gripper_position=position)
+                    if stop_requested():
+                        return
                     latest_state.update(state)
-                    enqueue(("raw_robot_state", state))
-                    increment("raw_robot_states")
+                    if enqueue(("raw_robot_state", state), discard_if_stopping=True):
+                        increment("raw_robot_states")
                 except Exception:
                     increment("robot_read_errors")
                     raise
 
             def sample_camera_rig() -> None:
                 try:
+                    if stop_requested():
+                        return
                     frames = {
                         name: encode_frame(camera.read(), self.config.session.hdf5.jpeg_quality, self.config.modalities.depth)
                         for name, camera in cameras.items()
                     }
+                    # 相机读取或 JPEG 编码期间按下空格时，丢弃该轮，不让它成为尾帧。
+                    if stop_requested():
+                        return
                     # 组帧全部读取完成后才取时间戳，表示实际对外发布这个对齐快照的时刻。
                     bundle_timestamp = time.time()
                     state = latest_state.get()
+                    if stop_requested():
+                        return
                     if state is None:
                         increment("skipped_camera_bundles_without_robot_state")
                         return
@@ -206,8 +238,11 @@ class DataCollector:
                     if age_ms < 0 or age_ms > self.config.acquisition.max_alignment_age_ms:
                         increment("skipped_camera_bundles_stale_robot_state")
                         return
-                    enqueue(("observation_bundle", ObservationBundle(bundle_timestamp, frames, state)))
-                    increment("camera_bundles")
+                    if enqueue(
+                        ("observation_bundle", ObservationBundle(bundle_timestamp, frames, state)),
+                        discard_if_stopping=True,
+                    ):
+                        increment("camera_bundles")
                 except Exception:
                     increment("camera_read_errors")
                     raise
@@ -223,13 +258,20 @@ class DataCollector:
                 raise CollectionError("机器人反馈预热超时，未开始相机采集。")
             camera_worker.start()
             deadline = time.monotonic() + duration if duration is not None else None
-            while not stop_event.is_set() and not (stop_request is not None and stop_request.is_set()):
+            while not stop_requested():
                 if deadline is not None and time.monotonic() >= deadline:
                     break
                 if deadline is None:
-                    time.sleep(0.05)
+                    if stop_request is not None:
+                        stop_request.wait(0.05)
+                    else:
+                        stop_event.wait(0.05)
                 else:
-                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+                    wait_s = min(0.05, max(0.0, deadline - time.monotonic()))
+                    if stop_request is not None:
+                        stop_request.wait(wait_s)
+                    else:
+                        stop_event.wait(wait_s)
             for worker in workers:
                 if worker.error is not None:
                     raise CollectionError(f"{worker.name} 失败：{type(worker.error).__name__}: {worker.error}")
@@ -241,6 +283,11 @@ class DataCollector:
             stop_event.set()
             for worker in workers:
                 worker.join(timeout=2.0)
+            alive_workers = [worker.name for worker in workers if worker.is_alive()]
+            if alive_workers and primary_error is None:
+                primary_error = CollectionError(f"采集线程未能及时停止：{', '.join(alive_workers)}")
+            if capture_stopped is not None and not alive_workers:
+                capture_stopped.set()
             if gripper is not None:
                 try:
                     gripper.stop()

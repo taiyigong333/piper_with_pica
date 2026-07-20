@@ -26,6 +26,8 @@ def test_ros_child_environment_removes_uv_python_environment(monkeypatch) -> Non
     monkeypatch.setenv("VIRTUAL_ENV", "/tmp/project/.venv")
     monkeypatch.setenv("PYTHONHOME", "/tmp/python-home")
     monkeypatch.setenv("PYTHONPATH", "/tmp/project/src")
+    monkeypatch.setenv("QT_QPA_PLATFORM_PLUGIN_PATH", "/tmp/project/.venv/cv2/qt/plugins")
+    monkeypatch.setenv("QT_PLUGIN_PATH", "/tmp/project/.venv/cv2/qt")
     monkeypatch.setenv("PATH", "/tmp/project/.venv/bin:/usr/bin")
 
     environment = teleop_session._ros_child_environment()
@@ -33,6 +35,8 @@ def test_ros_child_environment_removes_uv_python_environment(monkeypatch) -> Non
     assert "VIRTUAL_ENV" not in environment
     assert "PYTHONHOME" not in environment
     assert "PYTHONPATH" not in environment
+    assert "QT_QPA_PLATFORM_PLUGIN_PATH" not in environment
+    assert "QT_PLUGIN_PATH" not in environment
     assert environment["PATH"] == "/usr/bin"
 
 
@@ -83,7 +87,7 @@ def test_external_teleop_starts_in_order_and_stops_process_groups(tmp_path: Path
     assert (tmp_path / "logs" / "piper_controller.log").exists()
 
 
-def test_controller_log_ignores_rviz_exit_but_detects_core_node_exit(tmp_path: Path) -> None:
+def test_controller_log_requires_rviz_and_core_nodes_to_stay_alive(tmp_path: Path) -> None:
     config_path = Path(__file__).parents[1] / "configs" / "pika_sense_piper.example.yaml"
     config = teleop_session.load_teleop_config(config_path)
     log_path = tmp_path / "piper_controller.log"
@@ -97,7 +101,9 @@ def test_controller_log_ignores_rviz_exit_but_detects_core_node_exit(tmp_path: P
         log_file.write("[ERROR] [rviz2-3]: process has died [pid 1, exit code -6].\n")
         log_file.flush()
         external = teleop_session.ExternalTeleop(config)
-        assert external._log_failure(managed) is None
+        failure = external._log_failure(managed)
+        assert failure is not None
+        assert "rviz2" in failure
 
         log_file.write("[ERROR] [arm_ik_pose_node.py-5]: process has died [pid 2, exit code 1].\n")
         log_file.flush()
@@ -113,10 +119,10 @@ def test_repeat_session_restarts_independent_trajectory(monkeypatch) -> None:
             {"result": "pass", "trajectory_id": "second"},
         ]
     )
-    calls: list[str] = []
+    calibration_reminders: list[bool] = []
 
     def fake_run_session(*args, **kwargs):
-        calls.append("run")
+        calibration_reminders.append(kwargs["show_calibration_reminder"])
         return next(reports)
 
     monkeypatch.setattr(teleop_session, "run_session", fake_run_session)
@@ -128,7 +134,7 @@ def test_repeat_session_restarts_independent_trajectory(monkeypatch) -> None:
         input_fn=lambda _: next(answers),
     )
 
-    assert calls == ["run", "run"]
+    assert calibration_reminders == [True, False]
     assert report["trajectory_count"] == 2
     assert [item["trajectory_id"] for item in report["sessions"]] == ["first", "second"]
 
@@ -162,10 +168,11 @@ def test_session_starts_collection_only_after_teleop_confirmation(tmp_path: Path
         def __init__(self, _config) -> None:
             pass
 
-        def run(self, *, stop_request, **_kwargs):
+        def run(self, *, stop_request, capture_stopped, **_kwargs):
             events.append("collect-start")
             assert stop_request.wait(timeout=1.0)
             events.append("collect-finished")
+            capture_stopped.set()
             trajectory_path = tmp_path / "records" / "synthetic" / "20260718" / "mock" / "trajectory.hdf5"
             return teleop_session.CollectionResult(
                 trajectory_id="mock",
